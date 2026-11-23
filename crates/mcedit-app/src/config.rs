@@ -101,6 +101,24 @@ impl InvalidWorldBehavior {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum FileMenuEscapeBehavior {
+    #[default]
+    HideMenu,
+    CloseWorld,
+}
+
+impl FileMenuEscapeBehavior {
+    pub const ALL: [Self; 2] = [Self::HideMenu, Self::CloseWorld];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::HideMenu => "Hide File Menu",
+            Self::CloseWorld => "Close Current World",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -125,6 +143,7 @@ pub struct AppConfig {
     pub show_floor_grid: bool,
     pub left_panel_style: PanelBackgroundStyle,
     pub invalid_world_behavior: InvalidWorldBehavior,
+    pub file_menu_escape_behavior: FileMenuEscapeBehavior,
     pub vsync: bool,
     pub mouse_sensitivity: f32,
     pub fly_mode: bool,
@@ -181,6 +200,7 @@ impl Default for AppConfig {
             show_floor_grid: true,
             left_panel_style: PanelBackgroundStyle::BlurredGlass,
             invalid_world_behavior: InvalidWorldBehavior::AskOpenInBrowser,
+            file_menu_escape_behavior: FileMenuEscapeBehavior::HideMenu,
             vsync: true,
             mouse_sensitivity: 0.18,
             fly_mode: false,

@@ -1,4 +1,4 @@
-use crate::config::{AppConfig, KeyAction, PanelBackgroundStyle};
+use crate::config::{AppConfig, FileMenuEscapeBehavior, KeyAction, PanelBackgroundStyle};
 use crate::editor::EditorState;
 use crate::tools::{
     ToolId, brush, chunk, clone, fill, filter, nbt_explorer, player, select, teleport,
@@ -647,6 +647,12 @@ impl McEditApp {
                     self.editor.invalid_world_prompt = None;
                 } else if self.editor.file_menu_open {
                     self.editor.file_menu_open = false;
+                    if self.editor.config.file_menu_escape_behavior
+                        == FileMenuEscapeBehavior::CloseWorld
+                        && self.editor.world.is_some()
+                    {
+                        self.editor.close_world(&mut gpu.renderer);
+                    }
                 } else if self.editor.settings_open {
                     self.editor.settings_open = false;
                 } else if self.editor.selection.box_.is_some()

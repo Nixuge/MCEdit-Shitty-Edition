@@ -1,4 +1,4 @@
-use crate::config::{InvalidWorldBehavior, PanelBackgroundStyle};
+use crate::config::{FileMenuEscapeBehavior, InvalidWorldBehavior, PanelBackgroundStyle};
 use crate::editor::EditorState;
 use egui::Context;
 use mcedit_render::WorldRenderer;
@@ -118,6 +118,21 @@ pub fn draw(ctx: &Context, editor: &mut EditorState, renderer: &mut WorldRendere
                     });
                 if behavior != editor.config.invalid_world_behavior {
                     editor.config.invalid_world_behavior = behavior;
+                    editor.config.save();
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Escape on File Menu:");
+                let mut behavior = editor.config.file_menu_escape_behavior;
+                egui::ComboBox::from_id_salt("file_menu_escape_behavior")
+                    .selected_text(behavior.label())
+                    .show_ui(ui, |ui| {
+                        for b in FileMenuEscapeBehavior::ALL {
+                            ui.selectable_value(&mut behavior, b, b.label());
+                        }
+                    });
+                if behavior != editor.config.file_menu_escape_behavior {
+                    editor.config.file_menu_escape_behavior = behavior;
                     editor.config.save();
                 }
             });
