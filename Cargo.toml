@@ -1,0 +1,47 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/mcedit-nbt",
+    "crates/mcedit-core",
+    "crates/mcedit-formats",
+    "crates/mcedit-plugins",
+    "crates/mcedit-render",
+    "crates/mcedit-app",
+]
+
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "BSD-3-Clause"
+
+[workspace.dependencies]
+ahash = "0.8"
+arboard = "3.4"
+bytemuck = { version = "1.21", features = ["derive"] }
+directories = "6.0"
+egui = { version = "0.37", features = ["default_fonts"] }
+egui-wgpu = { version = "0.37", features = ["winit"] }
+egui-winit = "0.37"
+flate2 = "1.1"
+glam = "0.30"
+image = { version = "0.25", default-features = false, features = ["png"] }
+indexmap = { version = "2.7", features = ["serde"] }
+muda = "0.17"
+parking_lot = "0.12"
+pollster = "0.4"
+rayon = "1.10"
+rfd = "0.15"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tempfile = "3.15"
+thiserror = "2.0"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+wgpu = "30.0"
+winit = "0.30"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }

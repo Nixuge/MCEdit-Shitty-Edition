@@ -1,0 +1,17 @@
+[package]
+name = "mcedit-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ahash.workspace = true
+flate2.workspace = true
+glam.workspace = true
+mcedit-nbt = { path = "../mcedit-nbt" }
+parking_lot.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

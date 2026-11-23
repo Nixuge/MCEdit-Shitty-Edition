@@ -1,0 +1,41 @@
+[package]
+name = "mcedit-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mcedit-rs"
+path = "src/main.rs"
+
+[[bin]]
+name = "mcedit-profile"
+path = "src/bin/mcedit_profile.rs"
+
+[dependencies]
+ahash.workspace = true
+arboard.workspace = true
+directories.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+egui-winit.workspace = true
+glam.workspace = true
+image.workspace = true
+mcedit-core = { path = "../mcedit-core" }
+mcedit-formats = { path = "../mcedit-formats" }
+mcedit-nbt = { path = "../mcedit-nbt" }
+mcedit-plugins = { path = "../mcedit-plugins" }
+mcedit-render = { path = "../mcedit-render" }
+muda.workspace = true
+parking_lot.workspace = true
+pollster.workspace = true
+rayon.workspace = true
+rfd.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+wgpu.workspace = true
+winit.workspace = true

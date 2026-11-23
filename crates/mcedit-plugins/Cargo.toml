@@ -1,0 +1,19 @@
+[package]
+name = "mcedit-plugins"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ahash.workspace = true
+glam.workspace = true
+mcedit-core = { path = "../mcedit-core" }
+mcedit-nbt = { path = "../mcedit-nbt" }
+rayon.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+mcedit-formats = { path = "../mcedit-formats" }
+mcedit-render = { path = "../mcedit-render" }
+parking_lot.workspace = true
+tempfile.workspace = true

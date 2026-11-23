@@ -1,0 +1,18 @@
+[package]
+name = "mcedit-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ahash.workspace = true
+bytemuck.workspace = true
+egui.workspace = true
+glam.workspace = true
+image.workspace = true
+mcedit-core = { path = "../mcedit-core" }
+rayon.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+wgpu.workspace = true
+zip.workspace = true
