@@ -1,4 +1,4 @@
-use crate::config::AppConfig;
+use crate::config::{AppConfig, InvalidWorldBehavior};
 use crate::jobs::{JobManager, JobOutcome};
 use crate::tools::ToolId;
 use crate::tools::brush::BrushToolState;
@@ -56,6 +56,12 @@ pub struct BrowserEntry {
 pub struct AnalysisModal {
     pub result: AnalysisResult,
     pub box_: BoundingBox,
+}
+
+pub struct InvalidWorldPrompt {
+    pub attempted_path: PathBuf,
+    pub browse_dir: PathBuf,
+    pub error: String,
 }
 
 pub enum MeshTaskResult {
@@ -117,6 +123,7 @@ pub struct EditorState {
     pub show_profiler_overlay: bool,
     pub settings_open: bool,
     pub confirm_quit_open: bool,
+    pub invalid_world_prompt: Option<InvalidWorldPrompt>,
     pub should_exit: bool,
 
     pub status_toast: Option<(String, Instant)>,
@@ -223,6 +230,7 @@ impl EditorState {
             show_profiler_overlay: false,
             settings_open: false,
             confirm_quit_open: false,
+            invalid_world_prompt: None,
             should_exit: false,
             status_toast: None,
             pending_atlas_reload,
@@ -473,6 +481,42 @@ impl EditorState {
         self.browser_dirty = false;
     }
 
+    pub fn open_folder_in_browser(&mut self, dir: PathBuf, renderer: &mut WorldRenderer) {
+        if !dir.is_dir() {
+            self.set_toast(format!("Folder does not exist: {}", dir.display()));
+            return;
+        }
+        if self.world.is_some() {
+            self.close_world(renderer);
+        }
+        self.set_browser_dir(dir.clone());
+        self.set_toast(format!("Browsing folder: {}", dir.display()));
+    }
+
+    fn handle_invalid_world(&mut self, path: &Path, error: String, renderer: &mut WorldRenderer) {
+        let browse_dir = if path.is_dir() {
+            Some(path.to_path_buf())
+        } else {
+            path.parent().filter(|p| p.is_dir()).map(|p| p.to_path_buf())
+        };
+
+        match (self.config.invalid_world_behavior, browse_dir) {
+            (InvalidWorldBehavior::OpenInBrowser, Some(dir)) => {
+                self.open_folder_in_browser(dir, renderer);
+            }
+            (InvalidWorldBehavior::AskOpenInBrowser, Some(dir)) => {
+                self.invalid_world_prompt = Some(InvalidWorldPrompt {
+                    attempted_path: path.to_path_buf(),
+                    browse_dir: dir,
+                    error,
+                });
+            }
+            _ => {
+                self.set_toast(error);
+            }
+        }
+    }
+
     pub fn open_world(&mut self, path: &Path, renderer: &mut WorldRenderer) {
         let open_res = {
             let reg = self.registry.read();
@@ -495,9 +539,13 @@ impl EditorState {
                     }
                     self.install_world(world, Some(path.to_path_buf()), renderer);
                 }
-                Err(e) => self.set_toast(format!("Failed to load world: {e}")),
+                Err(e) => {
+                    self.handle_invalid_world(path, format!("Failed to load world: {e}"), renderer);
+                }
             },
-            Err(e) => self.set_toast(format!("Unsupported world: {e}")),
+            Err(e) => {
+                self.handle_invalid_world(path, format!("Unsupported world: {e}"), renderer);
+            }
         }
     }
 

@@ -643,7 +643,9 @@ impl McEditApp {
                 false
             }
             KeyCode::Escape => {
-                if self.editor.file_menu_open {
+                if self.editor.invalid_world_prompt.is_some() {
+                    self.editor.invalid_world_prompt = None;
+                } else if self.editor.file_menu_open {
                     self.editor.file_menu_open = false;
                 } else if self.editor.settings_open {
                     self.editor.settings_open = false;
@@ -995,6 +997,7 @@ impl McEditApp {
             draw_analysis_modal(&ctx, &mut self.editor);
             draw_job_modal(&ctx, &mut self.editor);
             draw_quit_modal(&ctx, &mut self.editor);
+            draw_invalid_world_modal(&ctx, &mut self.editor, &mut gpu.renderer);
             crate::ui::profiler_overlay::draw(&ctx, &mut self.editor, &gpu.renderer);
             if self.hovered_drop_file.is_some() || self.wayland_hovering {
                 let label = self
@@ -1625,6 +1628,66 @@ fn draw_quit_modal(ctx: &egui::Context, editor: &mut EditorState) {
                 }
             });
         });
+}
+
+fn draw_invalid_world_modal(
+    ctx: &egui::Context,
+    editor: &mut EditorState,
+    renderer: &mut WorldRenderer,
+) {
+    let Some(prompt) = editor.invalid_world_prompt.take() else {
+        return;
+    };
+    let mut keep = true;
+    let mut close_now = false;
+    let mut open_in_browser = false;
+    egui::Window::new("Invalid World")
+        .open(&mut keep)
+        .collapsible(false)
+        .resizable(false)
+        .default_width(380.0)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(&prompt.error);
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(prompt.attempted_path.display().to_string())
+                    .small()
+                    .color(egui::Color32::GRAY),
+            );
+            ui.add_space(8.0);
+            ui.label("Open this folder in Browse Worlds instead?");
+            if editor
+                .world
+                .as_ref()
+                .is_some_and(|w| w.has_unsaved_changes())
+            {
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Warning: Your currently open world has unsaved changes.",
+                    )
+                    .small()
+                    .color(egui::Color32::from_rgb(240, 190, 90)),
+                );
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui.button("Open in Browse Worlds").clicked() {
+                    open_in_browser = true;
+                    close_now = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    close_now = true;
+                }
+            });
+        });
+
+    if open_in_browser {
+        editor.open_folder_in_browser(prompt.browse_dir, renderer);
+    } else if keep && !close_now {
+        editor.invalid_world_prompt = Some(prompt);
+    }
 }
 
 fn matches_keybind(binding: &str, code: KeyCode, mods: ModifiersState) -> bool {

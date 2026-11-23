@@ -3,14 +3,64 @@ use crate::editor::EditorState;
 use crate::ui::create_world::CreateWorldDraft;
 use egui::Ui;
 use mcedit_render::WorldRenderer;
+use std::cmp::Ordering;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::SystemTime;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserSort {
+    WorldsFirst,
+    NameAsc,
+    NameDesc,
+    ModifiedNewest,
+    ModifiedOldest,
+}
+
+impl BrowserSort {
+    const ALL: [Self; 5] = [
+        Self::WorldsFirst,
+        Self::NameAsc,
+        Self::NameDesc,
+        Self::ModifiedNewest,
+        Self::ModifiedOldest,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::WorldsFirst => "Worlds First",
+            Self::NameAsc => "Name (A-Z)",
+            Self::NameDesc => "Name (Z-A)",
+            Self::ModifiedNewest => "Newest",
+            Self::ModifiedOldest => "Oldest",
+        }
+    }
+}
+
+#[derive(Clone)]
+struct MtimeCache {
+    dir: PathBuf,
+    entries_len: usize,
+    mtimes: Arc<HashMap<PathBuf, SystemTime>>,
+}
 
 pub fn draw(ui: &mut Ui, editor: &mut EditorState, renderer: &mut WorldRenderer) {
     if editor.world.is_some() || editor.jobs.is_busy() {
         return;
     }
+    let mut invalidate_mtimes = false;
     if editor.browser_dirty {
         editor.refresh_browser_entries();
+        invalidate_mtimes = true;
     }
+
+    let sort_id = egui::Id::new("welcome_browser_sort_mode");
+    let mtime_cache_id = egui::Id::new("welcome_browser_mtime_cache");
+    let mut sort_mode = ui
+        .ctx()
+        .data(|d| d.get_temp::<BrowserSort>(sort_id))
+        .unwrap_or(BrowserSort::WorldsFirst);
 
     egui::CentralPanel::default().show(ui, |ui| {
         ui.vertical_centered(|ui| {
@@ -58,12 +108,12 @@ pub fn draw(ui: &mut Ui, editor: &mut EditorState, renderer: &mut WorldRenderer)
         let avail_w = ui.available_width();
         let container_w = 920.0_f32.min(avail_w - 32.0).max(320.0);
         let side_pad = ((avail_w - container_w) * 0.5).max(0.0);
-        
+
         let avail_h = (ui.available_height() - 24.0).max(200.0);
-        
+
         ui.horizontal(|ui| {
             ui.add_space(side_pad);
-            
+
             ui.allocate_ui(egui::vec2(container_w, avail_h), |ui| {
                 let col_w = ((container_w - 20.0) * 0.5).max(200.0);
                 let has_current_world = editor.browser_dir.join("level.dat").is_file();
@@ -79,7 +129,8 @@ pub fn draw(ui: &mut Ui, editor: &mut EditorState, renderer: &mut WorldRenderer)
 
                     cols[0].horizontal(|ui| {
                         if ui.button("Up").clicked()
-                            && let Some(parent) = editor.browser_dir.parent().map(|p| p.to_path_buf())
+                            && let Some(parent) =
+                                editor.browser_dir.parent().map(|p| p.to_path_buf())
                         {
                             editor.set_browser_dir(parent);
                         }
@@ -95,8 +146,21 @@ pub fn draw(ui: &mut Ui, editor: &mut EditorState, renderer: &mut WorldRenderer)
                         }
                         if ui.button("Refresh").clicked() {
                             editor.browser_dirty = true;
+                            invalidate_mtimes = true;
                         }
+                        egui::ComboBox::from_id_salt("welcome_browser_sort")
+                            .width(105.0)
+                            .selected_text(sort_mode.label())
+                            .show_ui(ui, |ui| {
+                                for mode in BrowserSort::ALL {
+                                    ui.selectable_value(&mut sort_mode, mode, mode.label());
+                                }
+                            });
                     });
+
+                    cols[0]
+                        .ctx()
+                        .data_mut(|d| d.insert_temp(sort_id, sort_mode));
 
                     cols[0].label(
                         egui::RichText::new(editor.browser_dir.display().to_string())
@@ -125,7 +189,88 @@ pub fn draw(ui: &mut Ui, editor: &mut EditorState, renderer: &mut WorldRenderer)
                         cols[0].add_space(4.0);
                     }
 
-                    let entries = editor.browser_entries.clone();
+                    let mut entries = editor.browser_entries.clone();
+                    let mtimes = if matches!(
+                        sort_mode,
+                        BrowserSort::ModifiedNewest | BrowserSort::ModifiedOldest
+                    ) {
+                        let cached = cols[0]
+                            .ctx()
+                            .data(|d| d.get_temp::<MtimeCache>(mtime_cache_id));
+                        let valid = !invalidate_mtimes
+                            && cached.as_ref().is_some_and(|c| {
+                                c.dir == editor.browser_dir && c.entries_len == entries.len()
+                            });
+                        if valid {
+                            cached.map(|c| c.mtimes)
+                        } else {
+                            let map: HashMap<PathBuf, SystemTime> = entries
+                                .iter()
+                                .filter_map(|e| {
+                                    let mtime = if e.is_world {
+                                        std::fs::metadata(e.path.join("level.dat"))
+                                            .and_then(|m| m.modified())
+                                            .or_else(|_| {
+                                                std::fs::metadata(&e.path)
+                                                    .and_then(|m| m.modified())
+                                            })
+                                            .ok()
+                                    } else {
+                                        std::fs::metadata(&e.path)
+                                            .and_then(|m| m.modified())
+                                            .ok()
+                                    };
+                                    mtime.map(|t| (e.path.clone(), t))
+                                })
+                                .collect();
+                            let mtimes = Arc::new(map);
+                            cols[0].ctx().data_mut(|d| {
+                                d.insert_temp(
+                                    mtime_cache_id,
+                                    MtimeCache {
+                                        dir: editor.browser_dir.clone(),
+                                        entries_len: entries.len(),
+                                        mtimes: Arc::clone(&mtimes),
+                                    },
+                                );
+                            });
+                            Some(mtimes)
+                        }
+                    } else {
+                        None
+                    };
+
+                    let cmp_name = |a: &str, b: &str| {
+                        a.to_ascii_lowercase()
+                            .cmp(&b.to_ascii_lowercase())
+                            .then_with(|| a.cmp(b))
+                    };
+
+                    entries.sort_by(|a, b| match sort_mode {
+                        BrowserSort::WorldsFirst => b
+                            .is_world
+                            .cmp(&a.is_world)
+                            .then_with(|| cmp_name(&a.name, &b.name)),
+                        BrowserSort::NameAsc => cmp_name(&a.name, &b.name),
+                        BrowserSort::NameDesc => cmp_name(&b.name, &a.name),
+                        BrowserSort::ModifiedNewest => {
+                            let ta = mtimes.as_deref().and_then(|m| m.get(&a.path));
+                            let tb = mtimes.as_deref().and_then(|m| m.get(&b.path));
+                            tb.cmp(&ta).then_with(|| cmp_name(&a.name, &b.name))
+                        }
+                        BrowserSort::ModifiedOldest => {
+                            let ta = mtimes.as_deref().and_then(|m| m.get(&a.path));
+                            let tb = mtimes.as_deref().and_then(|m| m.get(&b.path));
+                            match (ta, tb) {
+                                (Some(ta), Some(tb)) => ta.cmp(tb),
+                                (Some(_), None) => Ordering::Less,
+                                (None, Some(_)) => Ordering::Greater,
+                                (None, None) => Ordering::Equal,
+                            }
+                            .then_with(|| cmp_name(&a.name, &b.name))
+                        }
+                    });
+
                     egui::ScrollArea::vertical()
                         .id_salt("welcome_folder_browser")
                         .max_height(browser_list_h)
@@ -142,17 +287,25 @@ pub fn draw(ui: &mut Ui, editor: &mut EditorState, renderer: &mut WorldRenderer)
                                     if entry.is_world {
                                         if ui
                                             .button(
-                                                egui::RichText::new(format!("[World] {}", entry.name))
-                                                    .color(egui::Color32::from_rgb(150, 225, 160)),
+                                                egui::RichText::new(format!(
+                                                    "[World] {}",
+                                                    entry.name
+                                                ))
+                                                .color(egui::Color32::from_rgb(150, 225, 160)),
                                             )
                                             .clicked()
                                         {
                                             editor.open_world(&entry.path, renderer);
                                         }
-                                        if ui.small_button("->").on_hover_text("Open subfolder").clicked() {
+                                        if ui
+                                            .small_button("->")
+                                            .on_hover_text("Open subfolder")
+                                            .clicked()
+                                        {
                                             editor.set_browser_dir(entry.path);
                                         }
-                                    } else if ui.button(format!("[Dir] {}", entry.name)).clicked() {
+                                    } else if ui.button(format!("[Dir] {}", entry.name)).clicked()
+                                    {
                                         editor.set_browser_dir(entry.path);
                                     }
                                 });

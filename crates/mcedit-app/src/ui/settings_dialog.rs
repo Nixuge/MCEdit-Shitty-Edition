@@ -1,4 +1,4 @@
-use crate::config::PanelBackgroundStyle;
+use crate::config::{InvalidWorldBehavior, PanelBackgroundStyle};
 use crate::editor::EditorState;
 use egui::Context;
 use mcedit_render::WorldRenderer;
@@ -103,6 +103,21 @@ pub fn draw(ctx: &Context, editor: &mut EditorState, renderer: &mut WorldRendere
                     });
                 if style != editor.config.left_panel_style {
                     editor.config.left_panel_style = style;
+                    editor.config.save();
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Behavior on Open Invalid World:");
+                let mut behavior = editor.config.invalid_world_behavior;
+                egui::ComboBox::from_id_salt("invalid_world_behavior")
+                    .selected_text(behavior.label())
+                    .show_ui(ui, |ui| {
+                        for b in InvalidWorldBehavior::ALL {
+                            ui.selectable_value(&mut behavior, b, b.label());
+                        }
+                    });
+                if behavior != editor.config.invalid_world_behavior {
+                    editor.config.invalid_world_behavior = behavior;
                     editor.config.save();
                 }
             });

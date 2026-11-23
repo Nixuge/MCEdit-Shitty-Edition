@@ -77,6 +77,30 @@ impl PanelBackgroundStyle {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum InvalidWorldBehavior {
+    #[default]
+    ShowToast,
+    AskOpenInBrowser,
+    OpenInBrowser,
+}
+
+impl InvalidWorldBehavior {
+    pub const ALL: [Self; 3] = [
+        Self::ShowToast,
+        Self::AskOpenInBrowser,
+        Self::OpenInBrowser,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ShowToast => "Show Error Toast",
+            Self::AskOpenInBrowser => "Ask to Open in Browse Worlds",
+            Self::OpenInBrowser => "Open in Browse Worlds",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -100,6 +124,7 @@ pub struct AppConfig {
     pub show_ceiling: bool,
     pub show_floor_grid: bool,
     pub left_panel_style: PanelBackgroundStyle,
+    pub invalid_world_behavior: InvalidWorldBehavior,
     pub vsync: bool,
     pub mouse_sensitivity: f32,
     pub fly_mode: bool,
@@ -155,6 +180,7 @@ impl Default for AppConfig {
             show_ceiling: false,
             show_floor_grid: true,
             left_panel_style: PanelBackgroundStyle::BlurredGlass,
+            invalid_world_behavior: InvalidWorldBehavior::AskOpenInBrowser,
             vsync: true,
             mouse_sensitivity: 0.18,
             fly_mode: false,
