@@ -19,8 +19,7 @@ use mcedit_render::{
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
-use winit::application::ApplicationHandler;
+use std::time::{Duration, Instant};use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -87,6 +86,7 @@ pub struct McEditApp {
     left_mouse_down: bool,
     cursor_pos: Vec2,
     last_frame: Instant,
+    next_frame_at: Instant,
     fps_ema: f32,
     frame_count: u64,
     applied_vsync: bool,
@@ -119,6 +119,9 @@ impl McEditApp {
             mcedit_core::profiler::trace_start();
         }
         mcedit_core::profiler::milestones_reset();
+
+        let now = Instant::now();
+
         let mut app = Self {
             window: None,
             gpu: None,
@@ -131,7 +134,8 @@ impl McEditApp {
             right_mouse_down: false,
             left_mouse_down: false,
             cursor_pos: Vec2::ZERO,
-            last_frame: Instant::now(),
+            last_frame: now,
+            next_frame_at: now,
             fps_ema: 60.0,
             frame_count: 0,
             applied_vsync: vsync,
@@ -756,8 +760,15 @@ impl McEditApp {
         let now = Instant::now();
         let dt = (now - self.last_frame).as_secs_f32();
         self.last_frame = now;
+        if !self.editor.config.vsync && self.editor.config.max_fps > 0 {
+            let frame_dur = Duration::from_secs_f64(1.0 / self.editor.config.max_fps as f64);
+            let next = self.next_frame_at + frame_dur;
+            self.next_frame_at = if next <= now { now + frame_dur } else { next };
+        } else {
+            self.next_frame_at = now;
+        }
         if dt > 0.0001 {
-            self.fps_ema = self.fps_ema * 0.9 + (1.0 / dt).min(240.0) * 0.1;
+            self.fps_ema = self.fps_ema * 0.9 + (1.0 / dt).min(10_000.0) * 0.1;
         }
 
         if self.editor.should_exit {
@@ -1112,7 +1123,9 @@ impl McEditApp {
         let t_present = Instant::now();
         gpu.queue
             .submit(egui_cmd_bufs.into_iter().chain(std::iter::once(encoder.finish())));
-        win.pre_present_notify();
+        if self.editor.config.vsync {
+            win.pre_present_notify();
+        }
         gpu.queue.present(output);
         let present_dur = acquire_dur + t_present.elapsed();
         {
@@ -1148,19 +1161,35 @@ impl McEditApp {
             );
         }
 
-        win.request_redraw();
         self.sync_native_menu();
     }
 }
 
 impl ApplicationHandler<UserEvent> for McEditApp {
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         #[cfg(target_os = "linux")]
         if let Some(dnd) = &self.wayland_dnd {
             dnd.dispatch_pending();
         }
         if let Some(win) = &self.window {
-            win.request_redraw();
+            let max_fps = if self.editor.config.vsync {
+                0
+            } else {
+                self.editor.config.max_fps
+            };
+            if max_fps == 0 {
+                event_loop.set_control_flow(ControlFlow::Poll);
+                win.request_redraw();
+            } else {
+                let frame_dur = Duration::from_secs_f64(1.0 / max_fps as f64);
+                let target = self.next_frame_at.min(self.last_frame + frame_dur);
+                if Instant::now() >= target {
+                    event_loop.set_control_flow(ControlFlow::Poll);
+                    win.request_redraw();
+                } else {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(target));
+                }
+            }
         }
     }
 

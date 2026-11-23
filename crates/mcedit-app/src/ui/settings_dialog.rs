@@ -86,7 +86,25 @@ pub fn draw(ctx: &Context, editor: &mut EditorState, renderer: &mut WorldRendere
                 editor.config.save();
             }
             if ui
-                .checkbox(&mut editor.config.vsync, "VSync (uncheck to benchmark uncapped FPS)")
+                .checkbox(&mut editor.config.vsync, "VSync")
+                .changed()
+            {
+                editor.config.save();
+            }
+            if ui
+                .add_enabled(
+                    !editor.config.vsync,
+                    egui::Slider::new(&mut editor.config.max_fps, 0..=1000)
+                        .custom_formatter(|n, _| {
+                            let fps = n as u32;
+                            if fps == 0 {
+                                "Unlimited".to_string()
+                            } else {
+                                format!("{fps} FPS")
+                            }
+                        })
+                        .text("Max FPS (0 = Unlimited)"),
+                )
                 .changed()
             {
                 editor.config.save();
