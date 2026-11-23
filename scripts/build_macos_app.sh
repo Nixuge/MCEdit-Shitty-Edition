@@ -3,7 +3,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REWRITE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO_ROOT="$(cd "$REWRITE_DIR/.." && pwd)"
 
 BINARY="$REWRITE_DIR/target/release/mcedit-rs"
 OUT_DIR="$REWRITE_DIR/dist"
@@ -19,7 +18,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-ICO_PATH="$REPO_ROOT/mcedit.ico"
+ICO_PATH="$REWRITE_DIR/assets/mcedit.ico"
 if [[ ! -f "$ICO_PATH" ]]; then
     echo "Error: $ICO_PATH not found" >&2
     exit 1

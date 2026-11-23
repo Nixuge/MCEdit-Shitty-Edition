@@ -55,8 +55,8 @@ pub fn draw(ui: &mut Ui, editor: &mut EditorState, renderer: &mut WorldRenderer)
         invalidate_mtimes = true;
     }
 
-    let sort_id = egui::Id::new("welcome_browser_sort_mode");
-    let mtime_cache_id = egui::Id::new("welcome_browser_mtime_cache");
+    let sort_id = egui::Id::unique("welcome_browser_sort_mode");
+    let mtime_cache_id = egui::Id::unique("welcome_browser_mtime_cache");
     let mut sort_mode = ui
         .ctx()
         .data(|d| d.get_temp::<BrowserSort>(sort_id))
