@@ -106,6 +106,7 @@ pub struct AppConfig {
     pub autobrake: bool,
     pub resource_pack_path: Option<PathBuf>,
     pub recent_worlds: Vec<PathBuf>,
+    pub last_browser_dir: Option<PathBuf>,
     pub keybinds: BTreeMap<KeyAction, String>,
 }
 
@@ -160,6 +161,7 @@ impl Default for AppConfig {
             autobrake: true,
             resource_pack_path: None,
             recent_worlds: Vec::new(),
+            last_browser_dir: None,
             keybinds,
         }
     }
@@ -211,8 +213,62 @@ impl AppConfig {
         self.recent_worlds.truncate(8);
         self.save();
     }
+
+    /// Returns the default Minecraft `saves` directory if it exists on this OS.
+    pub fn minecraft_saves_dir() -> Option<PathBuf> {
+        let base = directories::BaseDirs::new()?;
+        #[cfg(target_os = "macos")]
+        let p = base.data_dir().join("minecraft").join("saves");
+        #[cfg(target_os = "windows")]
+        let p = base.data_dir().join(".minecraft").join("saves");
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let p = base.home_dir().join(".minecraft").join("saves");
+        p.is_dir().then_some(p)
+    }
+
+    /// Resolves the initial folder for the main-menu browser:
+    /// uses `last_browser_dir` if it still exists, otherwise Minecraft `saves`, home, or cwd.
+    pub fn resolve_browser_dir(&self) -> PathBuf {
+        if let Some(p) = &self.last_browser_dir
+            && p.is_dir()
+        {
+            return p.clone();
+        }
+        if let Some(saves) = Self::minecraft_saves_dir() {
+            return saves;
+        }
+        if let Some(base) = directories::BaseDirs::new()
+            && base.home_dir().is_dir()
+        {
+            return base.home_dir().to_path_buf();
+        }
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
+    }
 }
 
 fn default_show_barriers() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn browser_dir_persists_when_valid_and_falls_back_when_deleted() {
+        let valid_dir = std::env::temp_dir().join(format!("mcedit_browser_test_{}", std::process::id()));
+        std::fs::create_dir_all(&valid_dir).unwrap();
+
+        let cfg = AppConfig {
+            last_browser_dir: Some(valid_dir.clone()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolve_browser_dir(), valid_dir);
+
+        // Remove the folder and verify it falls back cleanly to an existing directory
+        std::fs::remove_dir_all(&valid_dir).unwrap();
+        let fallback = cfg.resolve_browser_dir();
+        assert_ne!(fallback, valid_dir);
+        assert!(fallback.is_dir());
+    }
 }

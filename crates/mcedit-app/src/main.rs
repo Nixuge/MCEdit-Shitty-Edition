@@ -4,6 +4,8 @@ mod editor;
 mod jobs;
 mod tools;
 mod ui;
+#[cfg(target_os = "linux")]
+mod wayland_dnd;
 
 use std::path::PathBuf;
 

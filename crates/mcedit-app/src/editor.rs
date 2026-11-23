@@ -46,6 +46,13 @@ pub struct ClipboardEntry {
     pub volume: SchematicVolume,
 }
 
+#[derive(Debug, Clone)]
+pub struct BrowserEntry {
+    pub name: String,
+    pub path: PathBuf,
+    pub is_world: bool,
+}
+
 pub struct AnalysisModal {
     pub result: AnalysisResult,
     pub box_: BoundingBox,
@@ -153,6 +160,11 @@ pub struct EditorState {
     last_grid_rebuild: Instant,
     pub last_streaming_status: Option<(String, Instant)>,
     pub last_dim: Option<DimensionId>,
+
+    // Main-menu folder browser state
+    pub browser_dir: PathBuf,
+    pub browser_entries: Vec<BrowserEntry>,
+    pub browser_dirty: bool,
 }
 
 impl EditorState {
@@ -164,6 +176,7 @@ impl EditorState {
             let reg = registry.read();
             Arc::new(atlas.build_lod_colors(&reg))
         };
+        let browser_dir = config.resolve_browser_dir();
         let plugins = PluginRegistry::with_stock_plugins();
         let brush = BrushToolState::new(&plugins);
         let filter = FilterToolState::new(&plugins);
@@ -246,6 +259,9 @@ impl EditorState {
             last_grid_rebuild: Instant::now() - Duration::from_secs(10),
             last_streaming_status: None,
             last_dim: None,
+            browser_dir,
+            browser_entries: Vec::new(),
+            browser_dirty: true,
         }
     }
 
@@ -414,6 +430,49 @@ impl EditorState {
         )
     }
 
+    pub fn set_browser_dir(&mut self, dir: PathBuf) {
+        if dir.is_dir() {
+            self.browser_dir = dir.clone();
+            self.config.last_browser_dir = Some(dir);
+            self.config.save();
+            self.browser_dirty = true;
+        }
+    }
+
+    pub fn refresh_browser_entries(&mut self) {
+        if !self.browser_dir.is_dir() {
+            self.browser_dir = self.config.resolve_browser_dir();
+        }
+        let mut entries = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(&self.browser_dir) {
+            for item in rd.flatten() {
+                let path = item.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                if name.starts_with('.') {
+                    continue;
+                }
+                let is_world = path.join("level.dat").is_file();
+                entries.push(BrowserEntry {
+                    name: name.to_string(),
+                    path,
+                    is_world,
+                });
+            }
+        }
+        entries.sort_by(|a, b| {
+            b.is_world
+                .cmp(&a.is_world)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+        self.browser_entries = entries;
+        self.browser_dirty = false;
+    }
+
     pub fn open_world(&mut self, path: &Path, renderer: &mut WorldRenderer) {
         let open_res = {
             let reg = self.registry.read();
@@ -422,6 +481,18 @@ impl EditorState {
         match open_res {
             Ok(fmt) => match World::open(fmt, self.registry.clone(), self.config.undo_limit) {
                 Ok(world) => {
+                    let browse_parent = if path.is_file() {
+                        path.parent().and_then(|p| p.parent())
+                    } else {
+                        path.parent()
+                    };
+                    if let Some(parent) = browse_parent
+                        && parent.is_dir()
+                    {
+                        self.browser_dir = parent.to_path_buf();
+                        self.config.last_browser_dir = Some(parent.to_path_buf());
+                        self.browser_dirty = true;
+                    }
                     self.install_world(world, Some(path.to_path_buf()), renderer);
                 }
                 Err(e) => self.set_toast(format!("Failed to load world: {e}")),

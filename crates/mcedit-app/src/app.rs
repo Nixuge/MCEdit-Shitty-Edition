@@ -24,12 +24,20 @@ use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+#[cfg(target_os = "linux")]
+use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
 #[derive(Debug)]
-enum UserEvent {
+#[allow(dead_code)]
+pub(crate) enum UserEvent {
     Menu(muda::MenuEvent),
+    WaylandHover(bool),
+    WaylandDrop {
+        path: Option<PathBuf>,
+        offer_ptr: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +92,11 @@ pub struct McEditApp {
     applied_vsync: bool,
     initial_world: Option<PathBuf>,
     hovered_drop_file: Option<PathBuf>,
+    wayland_hovering: bool,
+    #[cfg(target_os = "linux")]
+    event_proxy: EventLoopProxy<UserEvent>,
+    #[cfg(target_os = "linux")]
+    wayland_dnd: Option<crate::wayland_dnd::WaylandDnd>,
 }
 
 impl McEditApp {
@@ -94,8 +107,9 @@ impl McEditApp {
         event_loop.set_control_flow(ControlFlow::Poll);
 
         let proxy = event_loop.create_proxy();
+        let menu_proxy = proxy.clone();
         muda::MenuEvent::set_event_handler(Some(move |event| {
-            let _ = proxy.send_event(UserEvent::Menu(event));
+            let _ = menu_proxy.send_event(UserEvent::Menu(event));
         }));
 
         let config = AppConfig::load();
@@ -123,6 +137,11 @@ impl McEditApp {
             applied_vsync: vsync,
             initial_world,
             hovered_drop_file: None,
+            wayland_hovering: false,
+            #[cfg(target_os = "linux")]
+            event_proxy: proxy,
+            #[cfg(target_os = "linux")]
+            wayland_dnd: None,
         };
         let res = event_loop.run_app(&mut app).map_err(|e| e.to_string());
         if let Some(path) = trace_env {
@@ -977,9 +996,11 @@ impl McEditApp {
             draw_job_modal(&ctx, &mut self.editor);
             draw_quit_modal(&ctx, &mut self.editor);
             crate::ui::profiler_overlay::draw(&ctx, &mut self.editor, &gpu.renderer);
-            if let Some(path) = &self.hovered_drop_file {
-                let label = path
-                    .file_name()
+            if self.hovered_drop_file.is_some() || self.wayland_hovering {
+                let label = self
+                    .hovered_drop_file
+                    .as_ref()
+                    .and_then(|p| p.file_name())
                     .and_then(|n| n.to_str())
                     .unwrap_or("world");
                 egui::Area::new(egui::Id::unique("file_drop_overlay"))
@@ -1137,6 +1158,29 @@ impl ApplicationHandler<UserEvent> for McEditApp {
                     self.handle_menu_command(cmd, event_loop);
                 }
             }
+            UserEvent::WaylandHover(hovering) => {
+                self.wayland_hovering = hovering;
+            }
+            UserEvent::WaylandDrop { path, offer_ptr } => {
+                self.wayland_hovering = false;
+                #[cfg(target_os = "linux")]
+                if let Some(dnd) = &self.wayland_dnd {
+                    dnd.finish_offer(offer_ptr);
+                }
+                #[cfg(not(target_os = "linux"))]
+                let _ = offer_ptr;
+                if let Some(p) = path {
+                    if self.editor.jobs.is_busy() {
+                        self.editor
+                            .set_toast("Wait for current operation to finish before opening a world.");
+                    } else if let Some(gpu) = &mut self.gpu {
+                        self.editor.open_world(&p, &mut gpu.renderer);
+                        self.sync_native_menu();
+                    } else {
+                        self.initial_world = Some(p);
+                    }
+                }
+            }
         }
     }
 
@@ -1165,6 +1209,11 @@ impl ApplicationHandler<UserEvent> for McEditApp {
                     .expect("create main window"),
             );
             win.set_maximized(true);
+            #[cfg(target_os = "linux")]
+            {
+                self.wayland_dnd =
+                    crate::wayland_dnd::WaylandDnd::attach(&win, self.event_proxy.clone());
+            }
             self.init_gpu(win);
             self.sync_native_menu();
         }
