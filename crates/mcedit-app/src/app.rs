@@ -1146,6 +1146,10 @@ impl McEditApp {
 
 impl ApplicationHandler<UserEvent> for McEditApp {
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "linux")]
+        if let Some(dnd) = &self.wayland_dnd {
+            dnd.dispatch_pending();
+        }
         if let Some(win) = &self.window {
             win.request_redraw();
         }

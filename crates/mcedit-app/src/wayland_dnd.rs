@@ -4,7 +4,9 @@ use std::fs::File;
 use std::os::fd::FromRawFd;
 use std::path::PathBuf;
 use std::ptr;
-use wayland_sys::client::{WaylandClient, wayland_client_option, wl_display, wl_proxy};
+use wayland_sys::client::{
+    WaylandClient, wayland_client_option, wl_display, wl_event_queue, wl_proxy,
+};
 use wayland_sys::common::{wl_argument, wl_fixed_t, wl_interface, wl_message};
 use winit::event_loop::EventLoopProxy;
 use winit::window::Window;
@@ -16,46 +18,62 @@ unsafe extern "C" {
     fn close(fd: c_int) -> c_int;
 }
 
+#[repr(transparent)]
+struct SyncWrapper<T>(T);
+
+// SAFETY: Only used for immutable 'static Wayland protocol tables
+// pointing to static C strings and static wl_interface descriptors.
+unsafe impl<T> Sync for SyncWrapper<T> {}
+
 // Static Wayland protocol interface descriptors for wl_registry, wl_seat,
 // wl_surface, wl_data_device_manager, wl_data_device, and wl_data_offer.
-static NULL_TYPES_1: [*const wl_interface; 1] = [ptr::null()];
-static NULL_TYPES_2: [*const wl_interface; 2] = [ptr::null(), ptr::null()];
-static NULL_TYPES_3: [*const wl_interface; 3] = [ptr::null(), ptr::null(), ptr::null()];
-static NULL_TYPES_4: [*const wl_interface; 4] = [ptr::null(), ptr::null(), ptr::null(), ptr::null()];
+static NULL_TYPES: SyncWrapper<[*const wl_interface; 4]> = SyncWrapper([ptr::null(); 4]);
 
-static REGISTRY_REQUESTS: [wl_message; 1] = [wl_message {
+static REGISTRY_REQUESTS: SyncWrapper<[wl_message; 1]> = SyncWrapper([wl_message {
     name: c"bind".as_ptr(),
     signature: c"usun".as_ptr(),
-    types: NULL_TYPES_4.as_ptr(),
-}];
-static REGISTRY_EVENTS: [wl_message; 2] = [
+    types: NULL_TYPES.0.as_ptr(),
+}]);
+static REGISTRY_EVENTS: SyncWrapper<[wl_message; 2]> = SyncWrapper([
     wl_message {
         name: c"global".as_ptr(),
         signature: c"usu".as_ptr(),
-        types: NULL_TYPES_3.as_ptr(),
+        types: NULL_TYPES.0.as_ptr(),
     },
     wl_message {
         name: c"global_remove".as_ptr(),
         signature: c"u".as_ptr(),
-        types: NULL_TYPES_1.as_ptr(),
+        types: NULL_TYPES.0.as_ptr(),
     },
-];
+]);
 static WL_REGISTRY_INTERFACE: wl_interface = wl_interface {
     name: c"wl_registry".as_ptr(),
     version: 1,
     request_count: 1,
-    requests: REGISTRY_REQUESTS.as_ptr(),
+    requests: REGISTRY_REQUESTS.0.as_ptr(),
     event_count: 2,
-    events: REGISTRY_EVENTS.as_ptr(),
+    events: REGISTRY_EVENTS.0.as_ptr(),
 };
 
+static SEAT_EVENTS: SyncWrapper<[wl_message; 2]> = SyncWrapper([
+    wl_message {
+        name: c"capabilities".as_ptr(),
+        signature: c"u".as_ptr(),
+        types: NULL_TYPES.0.as_ptr(),
+    },
+    wl_message {
+        name: c"name".as_ptr(),
+        signature: c"s".as_ptr(),
+        types: NULL_TYPES.0.as_ptr(),
+    },
+]);
 static WL_SEAT_INTERFACE: wl_interface = wl_interface {
     name: c"wl_seat".as_ptr(),
-    version: 1,
+    version: 2,
     request_count: 0,
     requests: ptr::null(),
-    event_count: 0,
-    events: ptr::null(),
+    event_count: 2,
+    events: SEAT_EVENTS.0.as_ptr(),
 };
 
 static WL_SURFACE_INTERFACE: wl_interface = wl_interface {
@@ -67,16 +85,16 @@ static WL_SURFACE_INTERFACE: wl_interface = wl_interface {
     events: ptr::null(),
 };
 
-static DATA_OFFER_REQUESTS: [wl_message; 5] = [
+static DATA_OFFER_REQUESTS: SyncWrapper<[wl_message; 5]> = SyncWrapper([
     wl_message {
         name: c"accept".as_ptr(),
         signature: c"u?s".as_ptr(),
-        types: NULL_TYPES_2.as_ptr(),
+        types: NULL_TYPES.0.as_ptr(),
     },
     wl_message {
         name: c"receive".as_ptr(),
         signature: c"sh".as_ptr(),
-        types: NULL_TYPES_2.as_ptr(),
+        types: NULL_TYPES.0.as_ptr(),
     },
     wl_message {
         name: c"destroy".as_ptr(),
@@ -91,53 +109,54 @@ static DATA_OFFER_REQUESTS: [wl_message; 5] = [
     wl_message {
         name: c"set_actions".as_ptr(),
         signature: c"uu".as_ptr(),
-        types: NULL_TYPES_2.as_ptr(),
+        types: NULL_TYPES.0.as_ptr(),
     },
-];
-static DATA_OFFER_EVENTS: [wl_message; 3] = [
+]);
+static DATA_OFFER_EVENTS: SyncWrapper<[wl_message; 3]> = SyncWrapper([
     wl_message {
         name: c"offer".as_ptr(),
         signature: c"s".as_ptr(),
-        types: NULL_TYPES_1.as_ptr(),
+        types: NULL_TYPES.0.as_ptr(),
     },
     wl_message {
         name: c"source_actions".as_ptr(),
         signature: c"u".as_ptr(),
-        types: NULL_TYPES_1.as_ptr(),
+        types: NULL_TYPES.0.as_ptr(),
     },
     wl_message {
         name: c"action".as_ptr(),
         signature: c"u".as_ptr(),
-        types: NULL_TYPES_1.as_ptr(),
+        types: NULL_TYPES.0.as_ptr(),
     },
-];
+]);
 static WL_DATA_OFFER_INTERFACE: wl_interface = wl_interface {
     name: c"wl_data_offer".as_ptr(),
     version: 3,
     request_count: 5,
-    requests: DATA_OFFER_REQUESTS.as_ptr(),
+    requests: DATA_OFFER_REQUESTS.0.as_ptr(),
     event_count: 3,
-    events: DATA_OFFER_EVENTS.as_ptr(),
+    events: DATA_OFFER_EVENTS.0.as_ptr(),
 };
 
-static DATA_DEVICE_OFFER_TYPES: [*const wl_interface; 1] = [&WL_DATA_OFFER_INTERFACE];
-static DATA_DEVICE_ENTER_TYPES: [*const wl_interface; 5] = [
+static DATA_DEVICE_OFFER_TYPES: SyncWrapper<[*const wl_interface; 1]> =
+    SyncWrapper([&WL_DATA_OFFER_INTERFACE]);
+static DATA_DEVICE_ENTER_TYPES: SyncWrapper<[*const wl_interface; 5]> = SyncWrapper([
     ptr::null(),
     &WL_SURFACE_INTERFACE,
     ptr::null(),
     ptr::null(),
     &WL_DATA_OFFER_INTERFACE,
-];
-static DATA_DEVICE_EVENTS: [wl_message; 6] = [
+]);
+static DATA_DEVICE_EVENTS: SyncWrapper<[wl_message; 6]> = SyncWrapper([
     wl_message {
         name: c"data_offer".as_ptr(),
         signature: c"n".as_ptr(),
-        types: DATA_DEVICE_OFFER_TYPES.as_ptr(),
+        types: DATA_DEVICE_OFFER_TYPES.0.as_ptr(),
     },
     wl_message {
         name: c"enter".as_ptr(),
         signature: c"uoff?o".as_ptr(),
-        types: DATA_DEVICE_ENTER_TYPES.as_ptr(),
+        types: DATA_DEVICE_ENTER_TYPES.0.as_ptr(),
     },
     wl_message {
         name: c"leave".as_ptr(),
@@ -147,7 +166,7 @@ static DATA_DEVICE_EVENTS: [wl_message; 6] = [
     wl_message {
         name: c"motion".as_ptr(),
         signature: c"uff".as_ptr(),
-        types: NULL_TYPES_3.as_ptr(),
+        types: NULL_TYPES.0.as_ptr(),
     },
     wl_message {
         name: c"drop".as_ptr(),
@@ -157,37 +176,37 @@ static DATA_DEVICE_EVENTS: [wl_message; 6] = [
     wl_message {
         name: c"selection".as_ptr(),
         signature: c"?o".as_ptr(),
-        types: DATA_DEVICE_OFFER_TYPES.as_ptr(),
+        types: DATA_DEVICE_OFFER_TYPES.0.as_ptr(),
     },
-];
+]);
 static WL_DATA_DEVICE_INTERFACE: wl_interface = wl_interface {
     name: c"wl_data_device".as_ptr(),
     version: 3,
     request_count: 0,
     requests: ptr::null(),
     event_count: 6,
-    events: DATA_DEVICE_EVENTS.as_ptr(),
+    events: DATA_DEVICE_EVENTS.0.as_ptr(),
 };
 
-static DDM_GET_DATA_DEVICE_TYPES: [*const wl_interface; 2] =
-    [&WL_DATA_DEVICE_INTERFACE, &WL_SEAT_INTERFACE];
-static DDM_REQUESTS: [wl_message; 2] = [
+static DDM_GET_DATA_DEVICE_TYPES: SyncWrapper<[*const wl_interface; 2]> =
+    SyncWrapper([&WL_DATA_DEVICE_INTERFACE, &WL_SEAT_INTERFACE]);
+static DDM_REQUESTS: SyncWrapper<[wl_message; 2]> = SyncWrapper([
     wl_message {
         name: c"create_data_source".as_ptr(),
         signature: c"n".as_ptr(),
-        types: NULL_TYPES_1.as_ptr(),
+        types: NULL_TYPES.0.as_ptr(),
     },
     wl_message {
         name: c"get_data_device".as_ptr(),
         signature: c"no".as_ptr(),
-        types: DDM_GET_DATA_DEVICE_TYPES.as_ptr(),
+        types: DDM_GET_DATA_DEVICE_TYPES.0.as_ptr(),
     },
-];
+]);
 static WL_DATA_DEVICE_MANAGER_INTERFACE: wl_interface = wl_interface {
     name: c"wl_data_device_manager".as_ptr(),
     version: 3,
     request_count: 2,
-    requests: DDM_REQUESTS.as_ptr(),
+    requests: DDM_REQUESTS.0.as_ptr(),
     event_count: 0,
     events: ptr::null(),
 };
@@ -245,11 +264,13 @@ static DATA_DEVICE_LISTENER: WlDataDeviceListener = WlDataDeviceListener {
 
 struct OfferState {
     has_uri_list: bool,
+    action: u32,
 }
 
 struct DndState {
     wl: &'static WaylandClient,
     display: *mut wl_display,
+    queue: *mut wl_event_queue,
     target_surface: *mut wl_proxy,
     proxy: EventLoopProxy<UserEvent>,
     registry: *mut wl_proxy,
@@ -258,10 +279,11 @@ struct DndState {
     seat: *mut wl_proxy,
     data_device: *mut wl_proxy,
     current_offer: Option<(*mut wl_proxy, u32)>,
+    pending_finish: bool,
 }
 
 pub struct WaylandDnd {
-    state: Box<DndState>,
+    state: *mut DndState,
 }
 
 impl WaylandDnd {
@@ -276,60 +298,79 @@ impl WaylandDnd {
         let display = wd.display.as_ptr() as *mut wl_display;
         let target_surface = ww.surface.as_ptr() as *mut wl_proxy;
 
-        let mut state = Box::new(DndState {
-            wl,
-            display,
-            target_surface,
-            proxy,
-            registry: ptr::null_mut(),
-            ddm: ptr::null_mut(),
-            ddm_version: 0,
-            seat: ptr::null_mut(),
-            data_device: ptr::null_mut(),
-            current_offer: None,
-        });
+        let queue = unsafe { (wl.wl_display_create_queue)(display) };
+        if queue.is_null() {
+            return None;
+        }
+
+        let dnd = Self {
+            state: Box::into_raw(Box::new(DndState {
+                wl,
+                display,
+                queue,
+                target_surface,
+                proxy,
+                registry: ptr::null_mut(),
+                ddm: ptr::null_mut(),
+                ddm_version: 0,
+                seat: ptr::null_mut(),
+                data_device: ptr::null_mut(),
+                current_offer: None,
+                pending_finish: false,
+            })),
+        };
+        let state_ptr = dnd.state.cast::<c_void>();
 
         unsafe {
+            let display_wrapper = (wl.wl_proxy_create_wrapper)(display as *mut wl_proxy);
+            if display_wrapper.is_null() {
+                return None;
+            }
+            (wl.wl_proxy_set_queue)(display_wrapper, queue);
+
             let mut args = [wl_argument { o: ptr::null_mut() }];
             let registry = (wl.wl_proxy_marshal_array_constructor)(
-                display as *mut wl_proxy,
+                display_wrapper,
                 1, // wl_display::get_registry
                 args.as_mut_ptr(),
                 &WL_REGISTRY_INTERFACE,
             );
+            (wl.wl_proxy_wrapper_destroy)(display_wrapper);
             if registry.is_null() {
                 return None;
             }
-            state.registry = registry;
-            let state_ptr = &mut *state as *mut DndState as *mut c_void;
+            (*dnd.state).registry = registry;
             (wl.wl_proxy_add_listener)(
                 registry,
                 &REGISTRY_LISTENER as *const WlRegistryListener as *mut extern "C" fn(),
                 state_ptr,
             );
-            (wl.wl_display_roundtrip)(display);
+            (wl.wl_display_roundtrip_queue)(display, queue);
 
-            if state.ddm.is_null() || state.seat.is_null() {
+            let ddm = (*dnd.state).ddm;
+            let seat = (*dnd.state).seat;
+            let ddm_version = (*dnd.state).ddm_version;
+            if ddm.is_null() || seat.is_null() {
                 return None;
             }
 
             let mut dd_args = [
                 wl_argument { o: ptr::null_mut() },
                 wl_argument {
-                    o: state.seat as *mut c_void,
+                    o: seat as *mut c_void,
                 },
             ];
             let data_device = (wl.wl_proxy_marshal_array_constructor_versioned)(
-                state.ddm,
+                ddm,
                 1, // wl_data_device_manager::get_data_device
                 dd_args.as_mut_ptr(),
                 &WL_DATA_DEVICE_INTERFACE,
-                state.ddm_version.min(3),
+                ddm_version.min(3),
             );
             if data_device.is_null() {
                 return None;
             }
-            state.data_device = data_device;
+            (*dnd.state).data_device = data_device;
             (wl.wl_proxy_add_listener)(
                 data_device,
                 &DATA_DEVICE_LISTENER as *const WlDataDeviceListener as *mut extern "C" fn(),
@@ -339,7 +380,14 @@ impl WaylandDnd {
         }
 
         tracing::info!("Attached native Wayland wl_data_device drag-and-drop handler");
-        Some(Self { state })
+        Some(dnd)
+    }
+
+    pub fn dispatch_pending(&self) {
+        unsafe {
+            let state = &*self.state;
+            (state.wl.wl_display_dispatch_queue_pending)(state.display, state.queue);
+        }
     }
 
     pub fn finish_offer(&self, offer_ptr: usize) {
@@ -348,12 +396,15 @@ impl WaylandDnd {
         }
         let offer = offer_ptr as *mut wl_proxy;
         unsafe {
-            if self.state.ddm_version >= 3 {
-                (self.state.wl.wl_proxy_marshal_array)(offer, 3, ptr::null_mut()); // finish
+            let state = &mut *self.state;
+            let wl = state.wl;
+            if state.pending_finish {
+                state.pending_finish = false;
+                (wl.wl_proxy_marshal_array)(offer, 3, ptr::null_mut()); // finish
             }
-            (self.state.wl.wl_proxy_marshal_array)(offer, 2, ptr::null_mut()); // destroy
-            (self.state.wl.wl_proxy_destroy)(offer);
-            (self.state.wl.wl_display_flush)(self.state.display);
+            (wl.wl_proxy_marshal_array)(offer, 2, ptr::null_mut()); // destroy
+            (wl.wl_proxy_destroy)(offer);
+            (wl.wl_display_flush)(state.display);
         }
     }
 }
@@ -361,22 +412,26 @@ impl WaylandDnd {
 impl Drop for WaylandDnd {
     fn drop(&mut self) {
         unsafe {
-            let wl = self.state.wl;
-            if let Some((offer, _)) = self.state.current_offer.take() {
+            let wl = (*self.state).wl;
+            if let Some((offer, _)) = (*self.state).current_offer.take() {
                 free_offer(wl, offer);
             }
-            if !self.state.data_device.is_null() {
-                (wl.wl_proxy_destroy)(self.state.data_device);
+            if !(*self.state).data_device.is_null() {
+                (wl.wl_proxy_destroy)((*self.state).data_device);
             }
-            if !self.state.seat.is_null() {
-                (wl.wl_proxy_destroy)(self.state.seat);
+            if !(*self.state).seat.is_null() {
+                (wl.wl_proxy_destroy)((*self.state).seat);
             }
-            if !self.state.ddm.is_null() {
-                (wl.wl_proxy_destroy)(self.state.ddm);
+            if !(*self.state).ddm.is_null() {
+                (wl.wl_proxy_destroy)((*self.state).ddm);
             }
-            if !self.state.registry.is_null() {
-                (wl.wl_proxy_destroy)(self.state.registry);
+            if !(*self.state).registry.is_null() {
+                (wl.wl_proxy_destroy)((*self.state).registry);
             }
+            if !(*self.state).queue.is_null() {
+                (wl.wl_event_queue_destroy)((*self.state).queue);
+            }
+            drop(Box::from_raw(self.state));
         }
     }
 }
@@ -385,13 +440,15 @@ unsafe fn free_offer(wl: &WaylandClient, offer: *mut wl_proxy) {
     if offer.is_null() {
         return;
     }
-    let ud = (wl.wl_proxy_get_user_data)(offer);
-    if !ud.is_null() {
-        (wl.wl_proxy_set_user_data)(offer, ptr::null_mut());
-        drop(Box::from_raw(ud as *mut OfferState));
+    unsafe {
+        let ud = (wl.wl_proxy_get_user_data)(offer);
+        if !ud.is_null() {
+            (wl.wl_proxy_set_user_data)(offer, ptr::null_mut());
+            drop(Box::from_raw(ud as *mut OfferState));
+        }
+        (wl.wl_proxy_marshal_array)(offer, 2, ptr::null_mut()); // destroy
+        (wl.wl_proxy_destroy)(offer);
     }
-    (wl.wl_proxy_marshal_array)(offer, 2, ptr::null_mut()); // destroy
-    (wl.wl_proxy_destroy)(offer);
 }
 
 extern "C" fn on_registry_global(
@@ -466,7 +523,16 @@ extern "C" fn on_offer_mime(data: *mut c_void, _offer: *mut wl_proxy, mime_type:
 }
 
 extern "C" fn on_offer_source_actions(_data: *mut c_void, _offer: *mut wl_proxy, _actions: u32) {}
-extern "C" fn on_offer_action(_data: *mut c_void, _offer: *mut wl_proxy, _action: u32) {}
+
+extern "C" fn on_offer_action(data: *mut c_void, _offer: *mut wl_proxy, action: u32) {
+    if data.is_null() {
+        return;
+    }
+    unsafe {
+        let offer_state = &mut *(data as *mut OfferState);
+        offer_state.action = action;
+    }
+}
 
 extern "C" fn on_data_offer(data: *mut c_void, _dev: *mut wl_proxy, offer: *mut wl_proxy) {
     if data.is_null() || offer.is_null() {
@@ -476,6 +542,7 @@ extern "C" fn on_data_offer(data: *mut c_void, _dev: *mut wl_proxy, offer: *mut 
         let state = &mut *(data as *mut DndState);
         let offer_state = Box::into_raw(Box::new(OfferState {
             has_uri_list: false,
+            action: 0,
         }));
         (state.wl.wl_proxy_add_listener)(
             offer,
@@ -503,15 +570,23 @@ extern "C" fn on_data_enter(
             free_offer(state.wl, old);
         }
         if surface != state.target_surface || offer.is_null() {
+            tracing::debug!(
+                surface_match = (surface == state.target_surface),
+                offer_null = offer.is_null(),
+                "Ignoring wl_data_device::enter"
+            );
+            free_offer(state.wl, offer);
             return;
         }
         let ud = (state.wl.wl_proxy_get_user_data)(offer);
         let has_uris = !ud.is_null() && (*(ud as *const OfferState)).has_uri_list;
         if !has_uris {
+            tracing::debug!("Ignoring wl_data_device::enter without text/uri-list");
             free_offer(state.wl, offer);
             return;
         }
 
+        tracing::debug!("Accepting Wayland drag enter (serial={serial})");
         state.current_offer = Some((offer, serial));
         let mut accept_args = [
             wl_argument { u: serial },
@@ -521,7 +596,8 @@ extern "C" fn on_data_enter(
         ];
         (state.wl.wl_proxy_marshal_array)(offer, 0, accept_args.as_mut_ptr());
         if state.ddm_version >= 3 {
-            let mut act_args = [wl_argument { u: 7 }, wl_argument { u: 1 }];
+            // Advertise and prefer copy (1) only; do not advertise move (2).
+            let mut act_args = [wl_argument { u: 1 }, wl_argument { u: 1 }];
             (state.wl.wl_proxy_marshal_array)(offer, 4, act_args.as_mut_ptr());
         }
         (state.wl.wl_display_flush)(state.display);
@@ -562,6 +638,7 @@ extern "C" fn on_data_motion(
                 },
             ];
             (state.wl.wl_proxy_marshal_array)(offer, 0, accept_args.as_mut_ptr());
+            (state.wl.wl_display_flush)(state.display);
         }
     }
 }
@@ -570,7 +647,7 @@ extern "C" fn on_data_drop(data: *mut c_void, _dev: *mut wl_proxy) {
     if data.is_null() {
         return;
     }
-    unsafe {
+    let (read_fd, proxy, offer_addr) = unsafe {
         let state = &mut *(data as *mut DndState);
         let _ = state.proxy.send_event(UserEvent::WaylandHover(false));
         let Some((offer, _)) = state.current_offer.take() else {
@@ -579,21 +656,28 @@ extern "C" fn on_data_drop(data: *mut c_void, _dev: *mut wl_proxy) {
 
         // Free our OfferState box now; the wl_proxy itself will be finished & destroyed
         // on the main thread after the background pipe read finishes.
+        let mut negotiated_action = 0;
         let ud = (state.wl.wl_proxy_get_user_data)(offer);
         if !ud.is_null() {
             (state.wl.wl_proxy_set_user_data)(offer, ptr::null_mut());
-            drop(Box::from_raw(ud as *mut OfferState));
+            let boxed = Box::from_raw(ud as *mut OfferState);
+            negotiated_action = boxed.action;
+            drop(boxed);
         }
+        state.pending_finish =
+            state.ddm_version >= 3 && (negotiated_action == 1 || negotiated_action == 2);
 
         let mut fds = [0 as c_int; 2];
         if pipe(fds.as_mut_ptr()) != 0 {
             (state.wl.wl_proxy_marshal_array)(offer, 2, ptr::null_mut());
             (state.wl.wl_proxy_destroy)(offer);
+            state.pending_finish = false;
             return;
         }
         let read_fd = fds[0];
         let write_fd = fds[1];
 
+        tracing::debug!("Receiving Wayland drop (action={negotiated_action})");
         let mut recv_args = [
             wl_argument {
                 s: c"text/uri-list".as_ptr(),
@@ -604,20 +688,21 @@ extern "C" fn on_data_drop(data: *mut c_void, _dev: *mut wl_proxy) {
         close(write_fd);
         (state.wl.wl_display_flush)(state.display);
 
-        let proxy = state.proxy.clone();
-        let offer_addr = offer as usize;
-        std::thread::spawn(move || {
-            use std::io::Read;
-            let mut file = File::from_raw_fd(read_fd);
-            let mut buf = String::new();
-            let _ = file.read_to_string(&mut buf);
-            let path = parse_first_file_uri(&buf);
-            let _ = proxy.send_event(UserEvent::WaylandDrop {
-                path,
-                offer_ptr: offer_addr,
-            });
+        (read_fd, state.proxy.clone(), offer as usize)
+    };
+
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut file = unsafe { File::from_raw_fd(read_fd) };
+        let mut buf = String::new();
+        let _ = file.read_to_string(&mut buf);
+        let path = parse_first_file_uri(&buf);
+        tracing::debug!(?path, raw = %buf.trim(), "Parsed Wayland drop payload");
+        let _ = proxy.send_event(UserEvent::WaylandDrop {
+            path,
+            offer_ptr: offer_addr,
         });
-    }
+    });
 }
 
 extern "C" fn on_data_selection(data: *mut c_void, _dev: *mut wl_proxy, offer: *mut wl_proxy) {
@@ -629,12 +714,7 @@ extern "C" fn on_data_selection(data: *mut c_void, _dev: *mut wl_proxy, offer: *
         if state.current_offer.is_some_and(|(cur, _)| cur == offer) {
             return;
         }
-        let ud = (state.wl.wl_proxy_get_user_data)(offer);
-        if !ud.is_null() {
-            (state.wl.wl_proxy_set_user_data)(offer, ptr::null_mut());
-            drop(Box::from_raw(ud as *mut OfferState));
-        }
-        (state.wl.wl_proxy_destroy)(offer);
+        free_offer(state.wl, offer);
     }
 }
 
