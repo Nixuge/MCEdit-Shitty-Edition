@@ -86,6 +86,21 @@ pub fn draw(ctx: &Context, editor: &mut EditorState, renderer: &mut WorldRendere
                 editor.config.save();
             }
             if ui
+                .checkbox(&mut editor.config.show_sign_text, "Show Sign Text")
+                .changed()
+            {
+                editor.config.save();
+            }
+            if ui
+                .checkbox(
+                    &mut editor.config.show_entity_labels,
+                    "Show Entity Names & Textures",
+                )
+                .changed()
+            {
+                editor.config.save();
+            }
+            if ui
                 .checkbox(&mut editor.config.vsync, "VSync")
                 .changed()
             {

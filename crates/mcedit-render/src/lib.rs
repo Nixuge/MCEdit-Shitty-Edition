@@ -6,6 +6,7 @@ pub mod mesher;
 pub mod overlay;
 pub mod pipeline;
 pub mod raycaster;
+pub mod sign_text;
 
 pub use atlas::{
     ATLAS_SIZE, DEFAULT_TERRAIN_PNG, GRID_DIM, LodBlockVisual, LodColorTable, TILE_SIZE,
@@ -25,6 +26,12 @@ pub use overlay::{OverlayMeshBuilder, OverlayVertex};
 pub use pipeline::{LodRegionKey, SectionMeshKey, WorldRenderer};
 pub use raycaster::{
     LodRaycastIndex, RaycastHit, raycast_or_air, raycast_world, raycast_world_with_lod,
+};
+pub use sign_text::{
+    SIGN_FONT_ATLAS_H, SIGN_FONT_ATLAS_W, SignPlacement, StyledSpan, TextStyle,
+    build_sign_font_atlas_rgba, java_color_code, java_named_or_hex_color, obfuscated_ascii_for,
+    parse_section_codes, push_sign_text_quads, sign_font_glyph_uv_exact, sign_font_solid_uv,
+    spans_has_obfuscated, spans_plain_text,
 };
 
 #[cfg(test)]
@@ -562,5 +569,95 @@ mod tests {
                 .validate(&module)
                 .unwrap_or_else(|e| panic!("WGSL validation failed for {name}:\n{}", e.emit_to_string(src)));
         }
+    }
+
+    #[test]
+    fn sign_placement_and_3d_text_quads_face_outward() {
+        let mut reg = BlockRegistry::with_pre113_defaults();
+        let wall_sign = reg.intern(
+            mcedit_core::BlockState::new("minecraft:oak_wall_sign").with_prop("facing", "south"),
+        );
+        let state = reg.get_state(wall_sign);
+        let meta = reg.get_meta(wall_sign);
+        assert_eq!(meta.shape, mcedit_core::BlockShape::WallSign);
+
+        let placement = SignPlacement::from_block(glam::IVec3::new(5, 64, 10), state, meta);
+        assert!((placement.normal - Vec3::Z).length() < 1e-4);
+        assert!((placement.right - Vec3::X).length() < 1e-4);
+
+        let mut bucket = MeshBucket::default();
+        push_sign_text_quads(
+            &mut bucket,
+            &placement,
+            &[vec![StyledSpan::plain("Hello")], vec![StyledSpan::plain("World")]],
+            &[],
+            [20, 16, 12, 255],
+            false,
+            [20, 16, 12, 255],
+            false,
+            0,
+        );
+        assert_eq!(bucket.quad_count(), 10, "10 non-space letters -> 10 glyph quads");
+
+        // Verify first glyph quad has outward CCW winding matching +Z normal
+        let v0 = Vec3::from_array(bucket.vertices[0].pos);
+        let v1 = Vec3::from_array(bucket.vertices[1].pos);
+        let v2 = Vec3::from_array(bucket.vertices[2].pos);
+        let tri_n = (v2 - v0).cross(v1 - v0);
+        assert!(tri_n.dot(placement.normal) > 0.0, "sign text quad winding must face outward");
+        assert!(v0.z > placement.center.z + placement.thickness * 0.5);
+    }
+
+    #[test]
+    fn java_formatting_codes_and_3d_styles() {
+        // Java rule: color resets formatting; formatting after color stacks; §r resets all;
+        // Bedrock §g is ignored without changing color.
+        let mut spans = Vec::new();
+        parse_section_codes("§l§cRed§l§oBI§m§nUS§gStill§rPlain", TextStyle::default(), &mut spans);
+        assert_eq!(spans_plain_text(&spans), "RedBIUSStillPlain");
+        assert_eq!(spans[0].text, "Red");
+        assert_eq!(spans[0].style.color, Some([0xFF, 0x55, 0x55]));
+        assert!(!spans[0].style.bold, "Java color code §c must reset prior §l bold");
+
+        assert_eq!(spans[1].text, "BI");
+        assert_eq!(spans[1].style.color, Some([0xFF, 0x55, 0x55]));
+        assert!(spans[1].style.bold && spans[1].style.italic);
+
+        assert_eq!(spans[2].text, "USStill");
+        assert!(spans[2].style.strikethrough && spans[2].style.underlined);
+        assert_eq!(spans[2].style.color, Some([0xFF, 0x55, 0x55]));
+
+        assert_eq!(spans[3].text, "Plain");
+        assert_eq!(spans[3].style, TextStyle::default());
+
+        // Verify 3D bold + underline + strikethrough + italic emit expected quads & shear
+        let mut reg = BlockRegistry::with_pre113_defaults();
+        let sign = reg.intern(
+            mcedit_core::BlockState::new("minecraft:oak_wall_sign").with_prop("facing", "south"),
+        );
+        let placement = SignPlacement::from_block(
+            glam::IVec3::ZERO,
+            reg.get_state(sign),
+            reg.get_meta(sign),
+        );
+        let mut styled_line = Vec::new();
+        parse_section_codes("§6§l§o§m§nA", TextStyle::default(), &mut styled_line);
+        let mut bucket = MeshBucket::default();
+        push_sign_text_quads(
+            &mut bucket,
+            &placement,
+            &[styled_line],
+            &[],
+            [20, 16, 12, 255],
+            false,
+            [20, 16, 12, 255],
+            false,
+            0,
+        );
+        // 1 underline + 1 strikethrough + 2 bold glyph strikes = 4 quads, all Gold (#FFAA00)
+        assert_eq!(bucket.quad_count(), 4);
+        assert!(bucket.vertices.iter().all(|v| v.color == [0xFF, 0xAA, 0x00, 255]));
+        // Third quad (index 8..12) is the italic glyph: TL.x > BL.x along +X
+        assert!(bucket.vertices[8].pos[0] > bucket.vertices[11].pos[0]);
     }
 }

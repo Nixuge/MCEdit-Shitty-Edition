@@ -242,6 +242,90 @@ impl TextureAtlas {
             base_v + (v_span as f32) - eps,
         ]
     }
+
+    /// Attempts to extract a 16x16 mob/entity face icon from a loaded Minecraft resource pack
+    /// (`.zip` archive or unpacked directory), normalizing UV bounds for any pack resolution.
+    pub fn load_entity_face_from_resource_pack(
+        pack_path: &Path,
+        slug: &str,
+    ) -> Option<RgbaImage> {
+        let (candidates, uv_box): (&[&str], (f32, f32, f32, f32)) = match slug {
+            "creeper" => (&["assets/minecraft/textures/entity/creeper/creeper.png"], (8.0 / 64.0, 8.0 / 32.0, 8.0 / 64.0, 8.0 / 32.0)),
+            "zombie" => (&["assets/minecraft/textures/entity/zombie/zombie.png"], (8.0 / 64.0, 8.0 / 64.0, 8.0 / 64.0, 8.0 / 64.0)),
+            "husk" => (&["assets/minecraft/textures/entity/zombie/husk.png"], (8.0 / 64.0, 8.0 / 64.0, 8.0 / 64.0, 8.0 / 64.0)),
+            "drowned" => (&["assets/minecraft/textures/entity/zombie/drowned.png"], (8.0 / 64.0, 8.0 / 64.0, 8.0 / 64.0, 8.0 / 64.0)),
+            "skeleton" => (&["assets/minecraft/textures/entity/skeleton/skeleton.png"], (8.0 / 64.0, 8.0 / 32.0, 8.0 / 64.0, 8.0 / 32.0)),
+            "stray" => (&["assets/minecraft/textures/entity/skeleton/stray.png"], (8.0 / 64.0, 8.0 / 32.0, 8.0 / 64.0, 8.0 / 32.0)),
+            "wither_skeleton" => (&["assets/minecraft/textures/entity/skeleton/wither_skeleton.png"], (8.0 / 64.0, 8.0 / 32.0, 8.0 / 64.0, 8.0 / 32.0)),
+            "enderman" => (&["assets/minecraft/textures/entity/enderman/enderman.png"], (8.0 / 64.0, 8.0 / 32.0, 8.0 / 64.0, 8.0 / 32.0)),
+            "spider" => (&["assets/minecraft/textures/entity/spider/spider.png"], (40.0 / 64.0, 12.0 / 32.0, 8.0 / 64.0, 8.0 / 32.0)),
+            "cave_spider" => (&["assets/minecraft/textures/entity/spider/cave_spider.png"], (40.0 / 64.0, 12.0 / 32.0, 8.0 / 64.0, 8.0 / 32.0)),
+            "villager" => (&["assets/minecraft/textures/entity/villager/villager.png"], (8.0 / 64.0, 8.0 / 64.0, 8.0 / 64.0, 10.0 / 64.0)),
+            "wandering_trader" => (&["assets/minecraft/textures/entity/wandering_trader.png"], (8.0 / 64.0, 8.0 / 64.0, 8.0 / 64.0, 10.0 / 64.0)),
+            "witch" => (&["assets/minecraft/textures/entity/witch.png"], (8.0 / 64.0, 8.0 / 128.0, 8.0 / 64.0, 10.0 / 128.0)),
+            "pig" => (&["assets/minecraft/textures/entity/pig/pig.png", "assets/minecraft/textures/entity/pig/temperate_pig.png"], (8.0 / 64.0, 8.0 / 32.0, 8.0 / 64.0, 8.0 / 32.0)),
+            "cow" => (&["assets/minecraft/textures/entity/cow/cow.png", "assets/minecraft/textures/entity/cow/temperate_cow.png"], (6.0 / 64.0, 6.0 / 32.0, 8.0 / 64.0, 8.0 / 32.0)),
+            "mooshroom" => (&["assets/minecraft/textures/entity/cow/red_mooshroom.png"], (6.0 / 64.0, 6.0 / 32.0, 8.0 / 64.0, 8.0 / 32.0)),
+            "sheep" => (&["assets/minecraft/textures/entity/sheep/sheep.png"], (8.0 / 64.0, 8.0 / 32.0, 6.0 / 64.0, 6.0 / 32.0)),
+            "chicken" => (&["assets/minecraft/textures/entity/chicken.png", "assets/minecraft/textures/entity/chicken/temperate_chicken.png"], (3.0 / 64.0, 3.0 / 32.0, 4.0 / 64.0, 6.0 / 32.0)),
+            "wolf" => (&["assets/minecraft/textures/entity/wolf/wolf.png"], (4.0 / 64.0, 4.0 / 32.0, 6.0 / 64.0, 6.0 / 32.0)),
+            "slime" => (&["assets/minecraft/textures/entity/slime/slime.png"], (8.0 / 64.0, 8.0 / 32.0, 8.0 / 64.0, 8.0 / 32.0)),
+            "ghast" => (&["assets/minecraft/textures/entity/ghast/ghast.png"], (16.0 / 64.0, 16.0 / 32.0, 16.0 / 64.0, 16.0 / 32.0)),
+            "blaze" => (&["assets/minecraft/textures/entity/blaze.png"], (8.0 / 64.0, 8.0 / 32.0, 8.0 / 64.0, 8.0 / 32.0)),
+            "iron_golem" => (&["assets/minecraft/textures/entity/iron_golem/iron_golem.png"], (8.0 / 128.0, 8.0 / 128.0, 8.0 / 128.0, 10.0 / 128.0)),
+            "bee" => (&["assets/minecraft/textures/entity/bee/bee.png"], (10.0 / 64.0, 10.0 / 64.0, 7.0 / 64.0, 7.0 / 64.0)),
+            "piglin" => (&["assets/minecraft/textures/entity/piglin/piglin.png"], (8.0 / 64.0, 8.0 / 64.0, 10.0 / 64.0, 8.0 / 64.0)),
+            "zombified_piglin" | "zombie_pigman" => (&["assets/minecraft/textures/entity/piglin/zombified_piglin.png", "assets/minecraft/textures/entity/zombie_pigman.png"], (8.0 / 64.0, 8.0 / 64.0, 10.0 / 64.0, 8.0 / 64.0)),
+            "player" => (&["assets/minecraft/textures/entity/player/wide/steve.png", "assets/minecraft/textures/entity/steve.png"], (8.0 / 64.0, 8.0 / 64.0, 8.0 / 64.0, 8.0 / 64.0)),
+            _ => return None,
+        };
+
+        let crop_face = |img: image::DynamicImage| -> RgbaImage {
+            let rgba = img.to_rgba8();
+            let w = rgba.width() as f32;
+            let h = rgba.height() as f32;
+            let x = (uv_box.0 * w)
+                .round()
+                .clamp(0.0, rgba.width().saturating_sub(1) as f32) as u32;
+            let y = (uv_box.1 * h)
+                .round()
+                .clamp(0.0, rgba.height().saturating_sub(1) as f32) as u32;
+            let cw = (uv_box.2 * w)
+                .round()
+                .max(1.0)
+                .min((rgba.width() - x) as f32) as u32;
+            let ch = (uv_box.3 * h)
+                .round()
+                .max(1.0)
+                .min((rgba.height() - y) as f32) as u32;
+            let sub = image::imageops::crop_imm(&rgba, x, y, cw, ch).to_image();
+            image::imageops::resize(&sub, 16, 16, FilterType::Nearest)
+        };
+
+        if pack_path.is_dir() {
+            for &rel in candidates {
+                let p = pack_path.join(rel);
+                if let Ok(img) = image::open(&p) {
+                    return Some(crop_face(img));
+                }
+            }
+        } else if pack_path.is_file()
+            && let Ok(file) = File::open(pack_path)
+            && let Ok(mut archive) = ZipArchive::new(file)
+        {
+            for &entry_path in candidates {
+                if let Ok(mut entry) = archive.by_name(entry_path) {
+                    let mut buf = Vec::new();
+                    if entry.read_to_end(&mut buf).is_ok()
+                        && let Ok(img) = image::load_from_memory(&buf)
+                    {
+                        return Some(crop_face(img));
+                    }
+                }
+            }
+        }
+        None
+    }
 }
 
 fn load_pack_block_textures(path: &Path) -> HashMap<String, RgbaImage> {

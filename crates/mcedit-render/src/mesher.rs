@@ -1147,7 +1147,7 @@ pub(crate) fn mesh_section_into(
                             None,
                         );
                     }
-                    BlockShape::Ladder | BlockShape::Vine | BlockShape::WallSign => {
+                    BlockShape::Ladder | BlockShape::Vine => {
                         let facing = state
                             .properties
                             .get("facing")
@@ -1173,7 +1173,37 @@ pub(crate) fn mesh_section_into(
                             None,
                         );
                     }
-                    BlockShape::SignPost | BlockShape::Button | BlockShape::Lever => {
+                    BlockShape::WallSign | BlockShape::SignPost => {
+                        let placement = crate::sign_text::SignPlacement::from_block(
+                            glam::IVec3::new(
+                                snap.center.pos.cx() * 16 + lx as i32,
+                                wy,
+                                snap.center.pos.cz() * 16 + lz as i32,
+                            ),
+                            state,
+                            meta,
+                        );
+                        let bucket = &mut out.opaque;
+                        let light = snap.get_light(lx as i32, wy, lz as i32).max(10);
+                        let board_col = shaded_color(meta, Face::Up, light, 255);
+                        let uv = TextureAtlas::tile_uv(meta.face_tiles[Face::North.index()]);
+                        placement.emit_board_box(bucket, uv, board_col);
+                        if !placement.is_wall && !placement.is_hanging {
+                            emit_box_all_faces(
+                                snap,
+                                lx as i32,
+                                wy,
+                                lz as i32,
+                                [bx + 0.46, by, bz + 0.46],
+                                [bx + 0.54, by + 0.58, bz + 0.54],
+                                meta,
+                                bucket,
+                                255,
+                                None,
+                            );
+                        }
+                    }
+                    BlockShape::Button | BlockShape::Lever => {
                         let bucket = &mut out.alpha_cutout;
                         emit_box_all_faces(
                             snap,

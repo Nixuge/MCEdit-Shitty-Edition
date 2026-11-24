@@ -10,3 +10,4 @@ pub mod toolbar;
 pub mod top_bar;
 pub mod welcome;
 pub mod world_info;
+pub mod world_labels;

@@ -8,7 +8,7 @@ use crate::ui::native_menu::{MenuCommand, NativeMenuBar};
 use crate::ui::world_info::WorldInfoDraft;
 use crate::ui::{
     block_picker, clipboard_panel, create_world, settings_dialog, status_bar, toolbar, top_bar,
-    welcome, world_info,
+    welcome, world_info, world_labels,
 };
 use glam::{IVec3, Vec2};
 use mcedit_core::TransformOp;
@@ -53,6 +53,8 @@ struct MenuSyncState {
     show_barriers: bool,
     show_entities: bool,
     show_block_entities: bool,
+    show_sign_text: bool,
+    show_entity_labels: bool,
     show_chunk_borders: bool,
     show_floor_grid: bool,
     has_resource_pack: bool,
@@ -309,6 +311,8 @@ impl McEditApp {
             show_barriers: self.editor.config.show_barriers,
             show_entities: self.editor.config.show_entities,
             show_block_entities: self.editor.config.show_block_entities,
+            show_sign_text: self.editor.config.show_sign_text,
+            show_entity_labels: self.editor.config.show_entity_labels,
             show_chunk_borders: self.editor.config.show_chunk_borders,
             show_floor_grid: self.editor.config.show_floor_grid,
             has_resource_pack: self.editor.config.resource_pack_path.is_some(),
@@ -425,6 +429,14 @@ impl McEditApp {
             }
             MenuCommand::ToggleBlockEntities => {
                 self.editor.config.show_block_entities = !self.editor.config.show_block_entities;
+                self.editor.config.save();
+            }
+            MenuCommand::ToggleSignText => {
+                self.editor.config.show_sign_text = !self.editor.config.show_sign_text;
+                self.editor.config.save();
+            }
+            MenuCommand::ToggleEntityLabels => {
+                self.editor.config.show_entity_labels = !self.editor.config.show_entity_labels;
                 self.editor.config.save();
             }
             MenuCommand::ToggleChunkBorders => {
@@ -878,7 +890,19 @@ impl McEditApp {
         self.editor.pump_chunk_meshing(&gpu.device, &mut gpu.renderer);
         let pump_dur = t_pump.elapsed();
         mcedit_core::profiler::record(mcedit_core::profiler::Stage::FramePump, pump_dur);
+        self.editor.ensure_nearby_separate_entities();
         self.editor.build_overlays(&mut self.overlays);
+        let egui_ctx = gpu.egui_state.egui_ctx();
+        let obfuscate_tick = (egui_ctx.input(|i| i.time) * 14.0) as u64;
+        let (sign_text_mesh, sign_has_obfuscated) =
+            world_labels::build_sign_text_mesh(&self.editor, obfuscate_tick);
+        if sign_has_obfuscated {
+            egui_ctx.request_repaint_after(std::time::Duration::from_millis(75));
+        }
+        gpu.renderer.set_sign_text_mesh(
+            &gpu.device,
+            (!sign_text_mesh.is_empty()).then_some(&sign_text_mesh),
+        );
 
         let Some(win) = &self.window else {
             return;
@@ -935,6 +959,7 @@ impl McEditApp {
         let mut left_panel_rect: Option<egui::Rect> = None;
         let mut full_output = gpu.egui_state.egui_ctx().run_ui(raw_input, |ui| {
             let ctx = ui.ctx().clone();
+            world_labels::draw(&ctx, &self.editor, vp_size, atlas_tex_id);
             top_bar::draw(ui, &mut self.editor, &mut gpu.renderer);
             toolbar::draw(ui, &mut self.editor);
             status_bar::draw(ui, &self.editor, &gpu.renderer, fps);

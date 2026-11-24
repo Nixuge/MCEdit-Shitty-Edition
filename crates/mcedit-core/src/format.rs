@@ -459,6 +459,14 @@ pub trait WorldFormat: Send + Sync {
             .load_chunk_readonly(dim, pos, registry)?
             .map(|c| LodChunkVoxels::from_chunk(&c, step, registry)))
     }
+    /// Loads entities stored in separate 1.17+ `entities/r.<x>.<z>.mca` region files, if any.
+    fn load_chunk_entities(
+        &self,
+        _dim: DimensionId,
+        _pos: ChunkPos,
+    ) -> FormatResult<Vec<mcedit_nbt::NbtCompound>> {
+        Ok(Vec::new())
+    }
     fn save_chunk(
         &self,
         dim: DimensionId,

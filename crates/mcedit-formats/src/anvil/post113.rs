@@ -1189,6 +1189,18 @@ impl WorldFormat for AnvilPost113Format {
         Ok(Some(LodChunkSurface::from_chunk(&chunk, registry)))
     }
 
+    fn load_chunk_entities(
+        &self,
+        dim: DimensionId,
+        pos: ChunkPos,
+    ) -> FormatResult<Vec<NbtCompound>> {
+        if self.uses_separate_entities(self.data_version) {
+            self.load_separate_entities(dim, pos)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
     fn load_chunk_lod_voxels(
         &self,
         dim: DimensionId,

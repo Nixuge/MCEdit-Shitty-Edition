@@ -832,6 +832,12 @@ impl BlockRegistry {
         if slug.ends_with("_trapdoor") {
             return self.default_by_name.get("minecraft:oak_trapdoor").copied();
         }
+        if slug.ends_with("_wall_sign") || slug.ends_with("_wall_hanging_sign") {
+            return self.default_by_name.get("minecraft:wall_sign").copied();
+        }
+        if slug.ends_with("_sign") {
+            return self.default_by_name.get("minecraft:standing_sign").copied();
+        }
         if slug.ends_with("_roots") || slug.ends_with("_sprouts") || slug.ends_with("_bush") || slug.ends_with("_grass") {
             return self.default_by_name.get("minecraft:short_grass").copied();
         }

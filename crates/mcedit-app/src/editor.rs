@@ -176,6 +176,9 @@ pub struct EditorState {
     pub browser_dir: PathBuf,
     pub browser_entries: Vec<BrowserEntry>,
     pub browser_dirty: bool,
+
+    // Lazy cache of 1.17+ separate `entities/r.<x>.<z>.mca` entity lists for nearby chunks
+    separate_entities_cache: AHashMap<(DimensionId, ChunkPos), Vec<mcedit_nbt::NbtCompound>>,
 }
 
 impl EditorState {
@@ -275,6 +278,7 @@ impl EditorState {
             browser_dir,
             browser_entries: Vec::new(),
             browser_dirty: true,
+            separate_entities_cache: AHashMap::new(),
         }
     }
 
@@ -1242,6 +1246,7 @@ impl EditorState {
             .store(self.world_gen, Ordering::Relaxed);
         self.urgent_near_active.store(0, Ordering::Relaxed);
         self.mesh_chunk_cache.write().clear();
+        self.separate_entities_cache.clear();
         mcedit_core::profiler::milestones_reset();
         while self.mesh_rx.try_recv().is_ok() {}
         renderer.clear_all_meshes();
@@ -2871,7 +2876,7 @@ impl EditorState {
                                 }
                             }
                             if self.config.show_entities {
-                                for ent in &chunk.entities {
+                                for ent in self.chunk_entities_for_display(dim, cp, chunk) {
                                     if let Some(pos_list) = ent.get_list("Pos")
                                         && pos_list.len() == 3
                                     {
@@ -2899,6 +2904,59 @@ impl EditorState {
                     }
                 }
             }
+        }
+    }
+
+    /// Lazily loads 1.17+ separate `entities/r.<x>.<z>.mca` entities for loaded chunks
+    /// within +/- 4 chunks of the camera so both entity wireframes and entity icons/names work on modern worlds.
+    pub fn ensure_nearby_separate_entities(&mut self) {
+        if (!self.config.show_entities && !self.config.show_entity_labels) || self.jobs.is_busy() {
+            return;
+        }
+        let Some(world) = &self.world else {
+            return;
+        };
+        let dim = world.active_dim;
+        let cam_cp = ChunkPos::new(
+            (self.camera.pos.x / 16.0).floor() as i32,
+            (self.camera.pos.z / 16.0).floor() as i32,
+        );
+        if self.separate_entities_cache.len() > 2048 {
+            self.separate_entities_cache.clear();
+        }
+        for dz in -4..=4 {
+            for dx in -4..=4 {
+                let cp = ChunkPos::new(cam_cp.cx() + dx, cam_cp.cz() + dz);
+                if self.separate_entities_cache.contains_key(&(dim, cp)) {
+                    continue;
+                }
+                let Some(chunk) = world.get_loaded_chunk(dim, cp) else {
+                    continue;
+                };
+                if !chunk.entities.is_empty() {
+                    continue;
+                }
+                let loaded = world
+                    .format
+                    .load_chunk_entities(dim, cp)
+                    .unwrap_or_default();
+                self.separate_entities_cache.insert((dim, cp), loaded);
+            }
+        }
+    }
+
+    pub fn chunk_entities_for_display<'a>(
+        &'a self,
+        dim: DimensionId,
+        cp: ChunkPos,
+        chunk: &'a Chunk,
+    ) -> &'a [mcedit_nbt::NbtCompound] {
+        if !chunk.entities.is_empty() {
+            &chunk.entities
+        } else if let Some(cached) = self.separate_entities_cache.get(&(dim, cp)) {
+            cached
+        } else {
+            &[]
         }
     }
 

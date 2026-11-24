@@ -720,10 +720,12 @@ pub struct WorldRenderer {
     lod_pipeline: wgpu::RenderPipeline,
     lod_translucent_pipeline: wgpu::RenderPipeline,
     translucent_pipeline: wgpu::RenderPipeline,
+    sign_text_pipeline: wgpu::RenderPipeline,
     overlay_tri_pipeline: wgpu::RenderPipeline,
     overlay_line_pipeline: wgpu::RenderPipeline,
 
     terrain_bind_group: wgpu::BindGroup,
+    sign_font_bind_group: wgpu::BindGroup,
     terrain_bind_layout: wgpu::BindGroupLayout,
     cam_uniform_buf: wgpu::Buffer,
 
@@ -768,6 +770,7 @@ pub struct WorldRenderer {
 
     preview_mesh: Option<GpuSectionMesh>,
     pub preview_origin: Vec3,
+    sign_text_mesh: Option<GpuBucket>,
     pub diff_params: [f32; 4],
 }
 
@@ -844,6 +847,14 @@ impl WorldRenderer {
             &terrain_bind_layout,
             &cam_uniform_buf,
             &atlas_view,
+            &atlas_sampler,
+        );
+        let (_sign_font_tex, sign_font_view) = create_sign_font_texture(device, queue);
+        let sign_font_bind_group = Self::make_terrain_bind_group(
+            device,
+            &terrain_bind_layout,
+            &cam_uniform_buf,
+            &sign_font_view,
             &atlas_sampler,
         );
 
@@ -1129,6 +1140,25 @@ impl WorldRenderer {
             Some(wgpu::BlendState::ALPHA_BLENDING),
             wgpu::DepthBiasState::default(),
         );
+        let sign_text_pipeline = make_terrain_pipeline_ext(
+            device,
+            &terrain_pipeline_layout,
+            &terrain_shader,
+            "vs_main",
+            "fs_sign_text",
+            surface_format,
+            Some(&terrain_vertex_layout),
+            false,
+            wgpu::CompareFunction::LessEqual,
+            Some(wgpu::Face::Back),
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+            wgpu::ColorWrites::ALL,
+            wgpu::DepthBiasState {
+                constant: -2,
+                slope_scale: -1.0,
+                clamp: 0.0,
+            },
+        );
 
         let shared_quad_ibuf_quads = 65536usize;
         let shared_quad_ibuf = create_shared_quad_ibuf(device, shared_quad_ibuf_quads);
@@ -1283,9 +1313,11 @@ impl WorldRenderer {
             lod_pipeline,
             lod_translucent_pipeline,
             translucent_pipeline,
+            sign_text_pipeline,
             overlay_tri_pipeline,
             overlay_line_pipeline,
             terrain_bind_group,
+            sign_font_bind_group,
             terrain_bind_layout,
             cam_uniform_buf,
             packed_quad_bind_layout,
@@ -1321,6 +1353,7 @@ impl WorldRenderer {
             grid_line_buf: None,
             preview_mesh: None,
             preview_origin: Vec3::ZERO,
+            sign_text_mesh: None,
             diff_params: [0.55, 0.85, 0.62, 0.0],
         }
     }
@@ -1350,6 +1383,11 @@ impl WorldRenderer {
                 },
             ],
         })
+    }
+
+    pub fn set_sign_text_mesh(&mut self, device: &wgpu::Device, bucket: Option<&MeshBucket>) {
+        self.sign_text_mesh =
+            bucket.and_then(|b| GpuBucket::from_bucket(device, b, "sign_text_mesh"));
     }
 
     pub fn update_atlas(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, atlas: &TextureAtlas) {
@@ -1999,6 +2037,9 @@ impl WorldRenderer {
         {
             max_quads = max_quads.max(b.quad_count);
         }
+        if let Some(st) = &self.sign_text_mesh {
+            max_quads = max_quads.max(st.quad_count);
+        }
         if max_quads > self.shared_quad_ibuf_quads {
             let new_cap = max_quads.next_power_of_two();
             self.shared_quad_ibuf = create_shared_quad_ibuf(device, new_cap);
@@ -2296,6 +2337,15 @@ impl WorldRenderer {
                         pass.draw_indexed(0..b.index_count, 0, 0..1);
                     }
                 }
+
+                // 5c. 3D In-World Sign Text (rendered flush on sign faces, depth-tested against world)
+                if let Some(st) = &self.sign_text_mesh {
+                    pass.set_pipeline(&self.sign_text_pipeline);
+                    pass.set_bind_group(0, &self.sign_font_bind_group, &[]);
+                    pass.set_vertex_buffer(0, st.vbuf.slice(..));
+                    pass.draw_indexed(0..st.index_count, 0, 0..1);
+                    pass.set_bind_group(0, &self.terrain_bind_group, &[]);
+                }
             } else if !visible_lods.is_empty() {
                 // 2D Chunk View overhead super-regions
                 pass.set_pipeline(&self.lod_pipeline);
@@ -2343,6 +2393,50 @@ impl WorldRenderer {
             }
         }
     }
+}
+
+fn create_sign_font_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let w = crate::sign_text::SIGN_FONT_ATLAS_W;
+    let h = crate::sign_text::SIGN_FONT_ATLAS_H;
+    let rgba = crate::sign_text::build_sign_font_atlas_rgba();
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("sign_font_atlas"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &tex,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &rgba,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * w),
+            rows_per_image: Some(h),
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    (tex, view)
 }
 
 fn create_atlas_texture(

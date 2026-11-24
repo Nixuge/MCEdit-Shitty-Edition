@@ -256,8 +256,33 @@ fn draw_in_window_menus(ui: &mut Ui, editor: &mut EditorState, renderer: &mut Wo
             editor.invalidate_all_meshes(renderer);
         }
         ui.separator();
-        ui.checkbox(&mut editor.config.show_entities, "Show Entities");
-        ui.checkbox(&mut editor.config.show_block_entities, "Show Block Entities");
+        if ui
+            .checkbox(&mut editor.config.show_entities, "Show Entities")
+            .changed()
+        {
+            editor.config.save();
+        }
+        if ui
+            .checkbox(&mut editor.config.show_block_entities, "Show Block Entities")
+            .changed()
+        {
+            editor.config.save();
+        }
+        if ui
+            .checkbox(&mut editor.config.show_sign_text, "Show Sign Text")
+            .changed()
+        {
+            editor.config.save();
+        }
+        if ui
+            .checkbox(
+                &mut editor.config.show_entity_labels,
+                "Show Entity Names & Textures",
+            )
+            .changed()
+        {
+            editor.config.save();
+        }
         ui.checkbox(&mut editor.config.show_chunk_borders, "Show Chunk Borders");
         if ui
             .checkbox(&mut editor.config.show_floor_grid, "Show World Chunk Grid")

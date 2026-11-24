@@ -367,3 +367,12 @@ fn fs_diff_gray_b(in: VsOut) -> @location(0) vec4<f32> {
     let rgb = apply_diff_gray_b(tex.rgb * in.color.rgb, shade);
     return vec4<f32>(rgb, u_cam.diff_params.z * in.color.a);
 }
+
+@fragment
+fn fs_sign_text(in: VsOut) -> @location(0) vec4<f32> {
+    let tex = textureSampleLevel(u_atlas_tex, u_atlas_samp, in.uv, 0.0);
+    if tex.a < 0.5 {
+        discard;
+    }
+    return vec4<f32>(in.color.rgb, tex.a * in.color.a);
+}

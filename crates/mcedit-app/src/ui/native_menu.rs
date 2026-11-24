@@ -25,6 +25,8 @@ pub enum MenuCommand {
     ToggleBarriers,
     ToggleEntities,
     ToggleBlockEntities,
+    ToggleSignText,
+    ToggleEntityLabels,
     ToggleChunkBorders,
     ToggleFloorGrid,
     LoadResourcePack,
@@ -58,6 +60,8 @@ impl MenuCommand {
             "view.barriers" => Some(Self::ToggleBarriers),
             "view.entities" => Some(Self::ToggleEntities),
             "view.block_entities" => Some(Self::ToggleBlockEntities),
+            "view.sign_text" => Some(Self::ToggleSignText),
+            "view.entity_labels" => Some(Self::ToggleEntityLabels),
             "view.chunk_borders" => Some(Self::ToggleChunkBorders),
             "view.floor_grid" => Some(Self::ToggleFloorGrid),
             "view.load_resource_pack" => Some(Self::LoadResourcePack),
@@ -89,6 +93,8 @@ pub struct NativeMenuBar {
     barriers_item: CheckMenuItem,
     entities_item: CheckMenuItem,
     block_entities_item: CheckMenuItem,
+    sign_text_item: CheckMenuItem,
+    entity_labels_item: CheckMenuItem,
     chunk_borders_item: CheckMenuItem,
     floor_grid_item: CheckMenuItem,
     reset_textures_item: MenuItem,
@@ -258,6 +264,20 @@ impl NativeMenuBar {
             config.show_block_entities,
             None,
         );
+        let sign_text_item = CheckMenuItem::with_id(
+            "view.sign_text",
+            "Show Sign Text",
+            true,
+            config.show_sign_text,
+            None,
+        );
+        let entity_labels_item = CheckMenuItem::with_id(
+            "view.entity_labels",
+            "Show Entity Names & Textures",
+            true,
+            config.show_entity_labels,
+            None,
+        );
         let chunk_borders_item = CheckMenuItem::with_id(
             "view.chunk_borders",
             "Show Chunk Borders",
@@ -306,6 +326,8 @@ impl NativeMenuBar {
                 &PredefinedMenuItem::separator(),
                 &entities_item,
                 &block_entities_item,
+                &sign_text_item,
+                &entity_labels_item,
                 &chunk_borders_item,
                 &floor_grid_item,
                 &PredefinedMenuItem::separator(),
@@ -353,6 +375,8 @@ impl NativeMenuBar {
             barriers_item,
             entities_item,
             block_entities_item,
+            sign_text_item,
+            entity_labels_item,
             chunk_borders_item,
             floor_grid_item,
             reset_textures_item,
@@ -399,6 +423,8 @@ impl NativeMenuBar {
         self.barriers_item.set_checked(config.show_barriers);
         self.entities_item.set_checked(config.show_entities);
         self.block_entities_item.set_checked(config.show_block_entities);
+        self.sign_text_item.set_checked(config.show_sign_text);
+        self.entity_labels_item.set_checked(config.show_entity_labels);
         self.chunk_borders_item.set_checked(config.show_chunk_borders);
         self.floor_grid_item.set_checked(config.show_floor_grid);
         self.reset_textures_item
