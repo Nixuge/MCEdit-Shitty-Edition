@@ -171,6 +171,9 @@ pub struct EditorState {
     last_grid_rebuild: Instant,
     pub last_streaming_status: Option<(String, Instant)>,
     pub last_dim: Option<DimensionId>,
+    /// True once at least one world has been loaded during this app session (in-memory only,
+    /// never persisted across app relaunches).
+    pub has_loaded_world_in_session: bool,
 
     // Main-menu folder browser state
     pub browser_dir: PathBuf,
@@ -275,6 +278,7 @@ impl EditorState {
             last_grid_rebuild: Instant::now() - Duration::from_secs(10),
             last_streaming_status: None,
             last_dim: None,
+            has_loaded_world_in_session: false,
             browser_dir,
             browser_entries: Vec::new(),
             browser_dirty: true,
@@ -569,15 +573,18 @@ impl EditorState {
         self.chunk_grid_dirty = true;
     }
 
-    pub fn install_world(
-        &mut self,
-        world: World,
-        recent_path: Option<PathBuf>,
-        renderer: &mut WorldRenderer,
-    ) {
-        if let Some(p) = recent_path {
-            self.config.push_recent_world(p);
+    fn apply_initial_camera_for_world(&mut self, world: &mut World) {
+        let keep_pos = self.config.keep_position_on_reload && self.has_loaded_world_in_session;
+        if keep_pos {
+            self.camera.velocity = Vec3::ZERO;
+            if let Some(prev_dim) = self.last_dim
+                && world.known_chunks.contains_key(&prev_dim)
+            {
+                world.active_dim = prev_dim;
+            }
+            return;
         }
+
         if let Some(p) = world.players.first() {
             self.camera.pos = Vec3::new(p.pos.x as f32, p.pos.y as f32 + 2.0, p.pos.z as f32);
             self.camera.yaw_deg = -p.rotation[0] + 180.0;
@@ -605,8 +612,8 @@ impl EditorState {
             });
             if !has_nearby
                 && let Some(nearest) = chunk_set.iter().copied().min_by_key(|cp| {
-                    let dx = (cp.cx() - cam_cp.cx()) as i64;
-                    let dz = (cp.cz() - cam_cp.cz()) as i64;
+                    let dx = (cp.cx() - cam_cp.cx()).abs() as i64;
+                    let dz = (cp.cz() - cam_cp.cz()).abs() as i64;
                     dx * dx + dz * dz
                 })
             {
@@ -617,6 +624,18 @@ impl EditorState {
                 );
             }
         }
+    }
+
+    pub fn install_world(
+        &mut self,
+        mut world: World,
+        recent_path: Option<PathBuf>,
+        renderer: &mut WorldRenderer,
+    ) {
+        if let Some(p) = recent_path {
+            self.config.push_recent_world(p);
+        }
+        self.apply_initial_camera_for_world(&mut world);
 
         self.teleport = TeleportToolState::default();
 
@@ -626,6 +645,7 @@ impl EditorState {
         self.clone.placement_origin = None;
         self.nbt.reset_to_world(&world);
         self.last_dim = Some(world.active_dim);
+        self.has_loaded_world_in_session = true;
         self.world = Some(world);
         self.invalidate_all_meshes(renderer);
         self.set_toast("World opened.");
@@ -2966,5 +2986,70 @@ impl EditorState {
             Some(DimensionId::End) => [0.08, 0.09, 0.11, 1.0],
             _ => [0.48, 0.68, 0.95, 1.0],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mcedit_formats::AnvilPost113Format;
+
+    #[test]
+    fn keep_position_on_reload_only_applies_within_same_session() {
+        let dir = std::env::temp_dir().join(format!(
+            "mcedit_keep_pos_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cfg = AppConfig {
+            keep_position_on_reload: true,
+            ..Default::default()
+        };
+        let mut ed = EditorState::new(cfg);
+        let fmt = AnvilPost113Format::create_new(
+            &dir,
+            "KeepPosTest",
+            0,
+            1,
+            IVec3::new(10, 64, 20),
+            3953,
+            &ed.registry.read(),
+        )
+        .unwrap();
+
+        // 1. Fresh app session (has_loaded_world_in_session == false):
+        //    even with keep_position_on_reload=true, first load goes to spawn.
+        ed.camera.pos = Vec3::new(999.0, 200.0, -999.0);
+        let mut w1 = World::open(Box::new(fmt), ed.registry.clone(), 10).unwrap();
+        w1.metadata.spawn_pos = IVec3::new(10, 64, 20);
+        ed.apply_initial_camera_for_world(&mut w1);
+        assert!((ed.camera.pos - Vec3::new(10.5, 76.0, 20.5)).length() < 1e-3);
+        ed.has_loaded_world_in_session = true;
+        ed.last_dim = Some(DimensionId::Nether);
+
+        // 2. User flies somewhere and reloads while app stays open -> position, angles & dim preserved!
+        let saved_pos = Vec3::new(123.5, 88.25, -456.75);
+        ed.camera.pos = saved_pos;
+        ed.camera.yaw_deg = 42.0;
+        ed.camera.pitch_deg = -15.0;
+        let fmt2 = AnvilPost113Format::open(&dir, &ed.registry.read()).unwrap();
+        let mut w2 = World::open(Box::new(fmt2), ed.registry.clone(), 10).unwrap();
+        w2.metadata.spawn_pos = IVec3::new(10, 64, 20);
+        w2.known_chunks.entry(DimensionId::Nether).or_default();
+        ed.apply_initial_camera_for_world(&mut w2);
+        assert_eq!(ed.camera.pos, saved_pos);
+        assert_eq!(ed.camera.yaw_deg, 42.0);
+        assert_eq!(ed.camera.pitch_deg, -15.0);
+        assert_eq!(w2.active_dim, DimensionId::Nether);
+
+        // 3. Option disabled -> reload resets camera back to spawn
+        ed.config.keep_position_on_reload = false;
+        let fmt3 = AnvilPost113Format::open(&dir, &ed.registry.read()).unwrap();
+        let mut w3 = World::open(Box::new(fmt3), ed.registry.clone(), 10).unwrap();
+        w3.metadata.spawn_pos = IVec3::new(10, 64, 20);
+        ed.apply_initial_camera_for_world(&mut w3);
+        assert!((ed.camera.pos - Vec3::new(10.5, 76.0, 20.5)).length() < 1e-3);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

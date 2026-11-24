@@ -86,6 +86,18 @@ pub fn draw(ctx: &Context, editor: &mut EditorState, renderer: &mut WorldRendere
                 editor.config.save();
             }
             if ui
+                .checkbox(
+                    &mut editor.config.keep_position_on_reload,
+                    "Keep position between map reloads",
+                )
+                .on_hover_text(
+                    "Preserves camera position, angle, and dimension when reloading or switching worlds while the app stays open (resets on app relaunch).",
+                )
+                .changed()
+            {
+                editor.config.save();
+            }
+            if ui
                 .checkbox(&mut editor.config.show_sign_text, "Show Sign Text")
                 .changed()
             {
