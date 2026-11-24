@@ -54,6 +54,7 @@ struct MenuSyncState {
     show_entities: bool,
     show_block_entities: bool,
     show_sign_text: bool,
+    show_sign_commands: bool,
     show_entity_labels: bool,
     show_chunk_borders: bool,
     show_floor_grid: bool,
@@ -312,6 +313,7 @@ impl McEditApp {
             show_entities: self.editor.config.show_entities,
             show_block_entities: self.editor.config.show_block_entities,
             show_sign_text: self.editor.config.show_sign_text,
+            show_sign_commands: self.editor.config.show_sign_commands,
             show_entity_labels: self.editor.config.show_entity_labels,
             show_chunk_borders: self.editor.config.show_chunk_borders,
             show_floor_grid: self.editor.config.show_floor_grid,
@@ -433,6 +435,10 @@ impl McEditApp {
             }
             MenuCommand::ToggleSignText => {
                 self.editor.config.show_sign_text = !self.editor.config.show_sign_text;
+                self.editor.config.save();
+            }
+            MenuCommand::ToggleSignCommands => {
+                self.editor.config.show_sign_commands = !self.editor.config.show_sign_commands;
                 self.editor.config.save();
             }
             MenuCommand::ToggleEntityLabels => {

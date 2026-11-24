@@ -87,8 +87,32 @@ pub fn draw(ui: &mut Ui, editor: &mut EditorState, renderer: &mut WorldRenderer)
                 ui.separator();
                 ui.colored_label(egui::Color32::from_rgb(255, 190, 60), "* Unsaved Edits");
             }
+
+            if let Some(w) = &editor.world {
+                let title = format_world_title(&w.metadata.level_name, w.format.root_path());
+                let full_path = w.format.root_path().display().to_string();
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add(egui::Label::new(egui::RichText::new(title).strong()).truncate())
+                        .on_hover_text(full_path);
+                });
+            }
         });
     });
+}
+
+fn format_world_title(level_name: &str, root_path: &std::path::Path) -> String {
+    let world_name = level_name.trim();
+    let folder_name = root_path
+        .file_name()
+        .map(|s| s.to_string_lossy())
+        .unwrap_or_default();
+    let folder_name = folder_name.trim();
+    match (world_name.is_empty(), folder_name.is_empty()) {
+        (false, false) if world_name != folder_name => format!("{world_name} ({folder_name})"),
+        (false, _) => world_name.to_string(),
+        (true, false) => folder_name.to_string(),
+        (true, true) => "Untitled World".to_string(),
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -275,6 +299,12 @@ fn draw_in_window_menus(ui: &mut Ui, editor: &mut EditorState, renderer: &mut Wo
             editor.config.save();
         }
         if ui
+            .checkbox(&mut editor.config.show_sign_commands, "Show Sign Commands")
+            .changed()
+        {
+            editor.config.save();
+        }
+        if ui
             .checkbox(
                 &mut editor.config.show_entity_labels,
                 "Show Entity Names & Textures",
@@ -312,4 +342,26 @@ fn draw_in_window_menus(ui: &mut Ui, editor: &mut EditorState, renderer: &mut Wo
             editor.pending_atlas_reload = Some(None);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn formats_world_title_with_optional_folder_name() {
+        assert_eq!(
+            format_world_title("Survival", Path::new("/saves/Survival")),
+            "Survival"
+        );
+        assert_eq!(
+            format_world_title("Survival World", Path::new("/saves/survival_v2")),
+            "Survival World (survival_v2)"
+        );
+        assert_eq!(
+            format_world_title("", Path::new("/saves/my_map")),
+            "my_map"
+        );
+    }
 }

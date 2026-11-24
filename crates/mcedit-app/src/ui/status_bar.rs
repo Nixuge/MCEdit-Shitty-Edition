@@ -15,6 +15,21 @@ pub fn draw(ui: &mut Ui, editor: &EditorState, renderer: &WorldRenderer, fps: f3
                 if let Some(hit) = editor.hover_hit {
                     let bp = hit.block_pos;
                     ui.label(format!("Cursor: ({}, {}, {})", bp.x, bp.y, bp.z));
+                    if let Some(cmds) = crate::ui::world_labels::hovered_sign_commands(editor) {
+                        ui.separator();
+                        let summary: Vec<String> = cmds
+                            .iter()
+                            .map(|c| c.formatted_value())
+                            .collect();
+                        let mut joined = summary.join(" | ");
+                        if joined.chars().count() > 96 {
+                            joined = joined.chars().take(95).collect::<String>() + "…";
+                        }
+                        ui.colored_label(
+                            egui::Color32::from_rgb(255, 200, 95),
+                            format!("Sign Cmd: {joined}"),
+                        );
+                    }
                     if editor.compare.is_active()
                         && let Some((kind, id_a, id_b)) = editor.inspect_compare_block(bp)
                         && kind != mcedit_core::DiffKind::Match

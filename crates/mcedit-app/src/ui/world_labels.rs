@@ -17,6 +17,45 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignClickCommand {
+    /// 1-based sign line index (`1..=4`).
+    pub line: u8,
+    /// `true` if from 1.20+ `back_text`, `false` if front (`Text1..4` or `front_text`).
+    pub is_back: bool,
+    /// Minecraft click event action (`run_command`, `suggest_command`, `open_url`, `copy_to_clipboard`, `change_page`, etc.).
+    pub action: String,
+    /// Command string, URL, or payload value.
+    pub value: String,
+}
+
+impl SignClickCommand {
+    /// Formats the action + value in a concise Minecraft-friendly display form.
+    pub fn formatted_value(&self) -> String {
+        match self.action.as_str() {
+            "run_command" => {
+                if self.value.starts_with('/') {
+                    self.value.clone()
+                } else {
+                    format!("/{}", self.value)
+                }
+            }
+            "suggest_command" => {
+                let v = if self.value.starts_with('/') {
+                    self.value.clone()
+                } else {
+                    format!("/{}", self.value)
+                };
+                format!("[suggest] {v}")
+            }
+            "open_url" => format!("[url] {}", self.value),
+            "copy_to_clipboard" => format!("[copy] {}", self.value),
+            "change_page" => format!("[page] {}", self.value),
+            other => format!("[{other}] {}", self.value),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SignDisplay {
     pub block_pos: IVec3,
@@ -27,6 +66,7 @@ pub struct SignDisplay {
     pub front_glowing: bool,
     pub back_glowing: bool,
     pub is_hanging: bool,
+    pub click_commands: Vec<SignClickCommand>,
 }
 
 #[derive(Debug, Clone)]
@@ -152,10 +192,33 @@ pub fn build_sign_text_mesh(editor: &EditorState, obfuscate_tick: u64) -> (MeshB
     (bucket, has_obfuscated)
 }
 
-/// Renders floating 3D-projected Entity icon + name badges onto the background egui layer
-/// (above 3D terrain, behind all menus & panels). Sign text is rendered directly in 3D on signs.
+/// Returns click commands attached to the sign block currently under the cursor, if any.
+pub fn hovered_sign_commands(editor: &EditorState) -> Option<Vec<SignClickCommand>> {
+    let hit = editor.hover_hit?;
+    let world = editor.world.as_ref()?;
+    let bp = hit.block_pos;
+    let cp = ChunkPos::new(bp.x.div_euclid(16), bp.z.div_euclid(16));
+    let chunk = world.get_loaded_chunk(world.active_dim, cp)?;
+    for be in &chunk.block_entities {
+        if be.get_int("x") == Some(bp.x)
+            && be.get_int("y") == Some(bp.y)
+            && be.get_int("z") == Some(bp.z)
+            && let Some(sign) = extract_sign_display(be)
+            && !sign.click_commands.is_empty()
+        {
+            return Some(sign.click_commands);
+        }
+    }
+    None
+}
+
+/// Renders floating 3D-projected Entity icon + name badges and Sign click-command strips onto
+/// the background egui layer (above 3D terrain, behind all menus & panels). Sign text itself
+/// is rendered directly in 3D on the wooden sign face.
 pub fn draw(ctx: &Context, editor: &EditorState, vp_size: Vec2, atlas_tex_id: TextureId) {
-    if !editor.config.show_entity_labels || editor.world.is_none() || editor.jobs.is_busy() {
+    let show_entities = editor.config.show_entity_labels;
+    let show_sign_cmds = editor.config.show_sign_commands;
+    if (!show_entities && !show_sign_cmds) || editor.world.is_none() || editor.jobs.is_busy() {
         return;
     }
     let Some(world) = &editor.world else {
@@ -174,34 +237,40 @@ pub fn draw(ctx: &Context, editor: &EditorState, vp_size: Vec2, atlas_tex_id: Te
     );
     let screen_rect = ctx.content_rect();
     let reg = editor.registry.read();
+    let hovered_bp = editor.hover_hit.map(|h| h.block_pos);
 
     const MAX_ENTITY_DIST: f32 = 64.0;
     const MAX_ENTITIES: usize = 120;
+    const MAX_SIGN_CMD_DIST: f32 = 40.0;
+    const MAX_SIGN_CMDS: usize = 64;
 
     let mut entities: Vec<(f32, Pos2, EntityDisplay)> = Vec::new();
+    let mut sign_cmds: Vec<(f32, bool, Pos2, Vec<SignClickCommand>)> = Vec::new();
 
     // 1. Players in the active dimension
-    for p in &world.players {
-        if p.dimension == dim {
-            let world_p = Vec3::new(p.pos.x as f32, p.pos.y as f32 + 2.15, p.pos.z as f32);
-            let dist = cam_pos.distance(world_p);
-            if dist <= MAX_ENTITY_DIST
-                && let Some((screen_p, _)) = project_world_to_screen(vp, world_p, screen_rect)
-            {
-                let mut player_spans = Vec::new();
-                parse_section_codes(&p.display_name, TextStyle::default(), &mut player_spans);
-                entities.push((
-                    dist,
-                    screen_p,
-                    EntityDisplay {
-                        pos: world_p,
-                        slug: "player".to_string(),
-                        primary_name: player_spans,
-                        subtitle: Some("Player".to_string()),
-                        atlas_tile: None,
-                        mc_nametag_only: false,
-                    },
-                ));
+    if show_entities {
+        for p in &world.players {
+            if p.dimension == dim {
+                let world_p = Vec3::new(p.pos.x as f32, p.pos.y as f32 + 2.15, p.pos.z as f32);
+                let dist = cam_pos.distance(world_p);
+                if dist <= MAX_ENTITY_DIST
+                    && let Some((screen_p, _)) = project_world_to_screen(vp, world_p, screen_rect)
+                {
+                    let mut player_spans = Vec::new();
+                    parse_section_codes(&p.display_name, TextStyle::default(), &mut player_spans);
+                    entities.push((
+                        dist,
+                        screen_p,
+                        EntityDisplay {
+                            pos: world_p,
+                            slug: "player".to_string(),
+                            primary_name: player_spans,
+                            subtitle: Some("Player".to_string()),
+                            atlas_tile: None,
+                            mc_nametag_only: false,
+                        },
+                    ));
+                }
             }
         }
     }
@@ -213,21 +282,59 @@ pub fn draw(ctx: &Context, editor: &EditorState, vp_size: Vec2, atlas_tex_id: Te
             let Some(chunk) = world.get_loaded_chunk(dim, cp) else {
                 continue;
             };
-            for ent in editor.chunk_entities_for_display(dim, cp, chunk) {
-                if let Some(ed) = extract_entity_display(ent, &reg) {
-                    let dist = cam_pos.distance(ed.pos);
-                    if dist <= MAX_ENTITY_DIST
+            if show_entities {
+                for ent in editor.chunk_entities_for_display(dim, cp, chunk) {
+                    if let Some(ed) = extract_entity_display(ent, &reg) {
+                        let dist = cam_pos.distance(ed.pos);
+                        if dist <= MAX_ENTITY_DIST
+                            && let Some((screen_p, _)) =
+                                project_world_to_screen(vp, ed.pos, screen_rect)
+                        {
+                            entities.push((dist, screen_p, ed));
+                        }
+                    }
+                }
+            }
+            if show_sign_cmds {
+                for be in &chunk.block_entities {
+                    let Some(sign) = extract_sign_display(be) else {
+                        continue;
+                    };
+                    if sign.click_commands.is_empty() {
+                        continue;
+                    }
+                    let is_hovered = hovered_bp == Some(sign.block_pos);
+                    let lx = sign.block_pos.x.rem_euclid(16) as usize;
+                    let lz = sign.block_pos.z.rem_euclid(16) as usize;
+                    let bid = chunk.get_block(lx, sign.block_pos.y, lz);
+                    let state = reg.get_state(bid);
+                    let meta = reg.get_meta(bid);
+                    let placement = SignPlacement::from_block(sign.block_pos, state, meta);
+                    let anchor_y = if placement.is_hanging || sign.is_hanging {
+                        sign.block_pos.y as f32 + 0.72
+                    } else if placement.is_wall {
+                        sign.block_pos.y as f32 + 0.86
+                    } else {
+                        sign.block_pos.y as f32 + 1.15
+                    };
+                    let world_p = Vec3::new(
+                        placement.center.x,
+                        anchor_y,
+                        placement.center.z,
+                    );
+                    let dist = cam_pos.distance(world_p);
+                    if (is_hovered || dist <= MAX_SIGN_CMD_DIST)
                         && let Some((screen_p, _)) =
-                            project_world_to_screen(vp, ed.pos, screen_rect)
+                            project_world_to_screen(vp, world_p, screen_rect)
                     {
-                        entities.push((dist, screen_p, ed));
+                        sign_cmds.push((dist, is_hovered, screen_p, sign.click_commands));
                     }
                 }
             }
         }
     }
 
-    if entities.is_empty() {
+    if entities.is_empty() && sign_cmds.is_empty() {
         return;
     }
 
@@ -235,6 +342,16 @@ pub fn draw(ctx: &Context, editor: &EditorState, vp_size: Vec2, atlas_tex_id: Te
     entities.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
     entities.truncate(MAX_ENTITIES);
     entities.reverse();
+
+    sign_cmds.sort_unstable_by(|a, b| {
+        // Keep hovered sign first before truncation, then nearest
+        b.1.cmp(&a.1).then_with(|| a.0.total_cmp(&b.0))
+    });
+    sign_cmds.truncate(MAX_SIGN_CMDS);
+    // Draw furthest first, and hovered sign last (always on top)
+    sign_cmds.sort_unstable_by(|a, b| {
+        a.1.cmp(&b.1).then_with(|| b.0.total_cmp(&a.0))
+    });
 
     // Fetch/invalidate entity icon cache if resource pack changed
     let cache_id = egui::Id::unique("world_labels_entity_icon_cache");
@@ -304,8 +421,113 @@ pub fn draw(ctx: &Context, editor: &EditorState, vp_size: Vec2, atlas_tex_id: Te
             obfuscate_tick,
         );
     }
+
+    for (dist, is_hovered, screen_p, cmds) in sign_cmds {
+        let fade = if is_hovered {
+            1.0
+        } else {
+            ((MAX_SIGN_CMD_DIST - dist) / 10.0).clamp(0.0, 1.0)
+        };
+        draw_sign_command_badge(&painter, screen_p, &cmds, is_hovered, fade);
+    }
+
     if any_obfuscated {
         ctx.request_repaint_after(Duration::from_millis(75));
+    }
+}
+
+fn draw_sign_command_badge(
+    painter: &egui::Painter,
+    anchor: Pos2,
+    cmds: &[SignClickCommand],
+    is_hovered: bool,
+    fade: f32,
+) {
+    if cmds.is_empty() {
+        return;
+    }
+    let show_line_prefix = cmds.len() > 1 || cmds.iter().any(|c| c.is_back);
+    let max_chars = if is_hovered { 160 } else { 48 };
+    let font = FontId::monospace(if is_hovered { 11.0 } else { 10.0 });
+    let prefix_col = apply_alpha(Color32::from_rgb(255, 195, 85), fade);
+    let cmd_col = apply_alpha(Color32::from_rgb(175, 242, 215), fade);
+
+    let mut galleys = Vec::with_capacity(cmds.len());
+    let mut max_w = 0.0_f32;
+    let mut total_h = 0.0_f32;
+    for (idx, c) in cmds.iter().enumerate() {
+        let mut job = LayoutJob::default();
+        let prefix = if show_line_prefix {
+            if c.is_back {
+                format!("B{} > ", c.line)
+            } else {
+                format!("L{} > ", c.line)
+            }
+        } else {
+            "> ".to_string()
+        };
+        job.append(
+            &prefix,
+            0.0,
+            TextFormat {
+                font_id: font.clone(),
+                color: prefix_col,
+                ..Default::default()
+            },
+        );
+        let mut text = c.formatted_value();
+        if text.chars().count() > max_chars {
+            text = text.chars().take(max_chars.saturating_sub(1)).collect::<String>() + "…";
+        }
+        job.append(
+            &text,
+            0.0,
+            TextFormat {
+                font_id: font.clone(),
+                color: cmd_col,
+                ..Default::default()
+            },
+        );
+        let g = painter.layout_job(job);
+        max_w = max_w.max(g.size().x);
+        total_h += g.size().y + if idx > 0 { 2.0 } else { 0.0 };
+        galleys.push(g);
+    }
+
+    let pad_x = 6.0_f32;
+    let pad_y = 3.5_f32;
+    let box_size = EguiVec2::new(max_w + pad_x * 2.0, total_h + pad_y * 2.0);
+    let rect = Rect::from_center_size(
+        egui::pos2(anchor.x, anchor.y - box_size.y * 0.5 - 3.0),
+        box_size,
+    );
+
+    let bg = apply_alpha(
+        Color32::from_rgba_unmultiplied(18, 20, 30, if is_hovered { 235 } else { 200 }),
+        fade,
+    );
+    let border = apply_alpha(
+        if is_hovered {
+            Color32::from_rgba_unmultiplied(255, 195, 85, 235)
+        } else {
+            Color32::from_rgba_unmultiplied(210, 155, 70, 175)
+        },
+        fade,
+    );
+    painter.rect_filled(rect, 3.0, bg);
+    painter.rect_stroke(
+        rect,
+        3.0,
+        Stroke::new(if is_hovered { 1.3 } else { 1.0 }, border),
+        egui::StrokeKind::Inside,
+    );
+
+    let mut y = rect.min.y + pad_y;
+    let x = rect.min.x + pad_x;
+    for g in galleys {
+        let h = g.size().y;
+        painter.galley(egui::pos2(x, y), g, cmd_col);
+        y += h + 2.0;
     }
 }
 
@@ -676,6 +898,7 @@ pub fn extract_sign_display(be: &NbtCompound) -> Option<SignDisplay> {
 
     let mut front_lines: Vec<Vec<StyledSpan>> = Vec::new();
     let mut back_lines: Vec<Vec<StyledSpan>> = Vec::new();
+    let mut click_commands: Vec<SignClickCommand> = Vec::new();
     let mut front_color_name: Option<String> = None;
     let mut back_color_name: Option<String> = None;
     let front_glowing;
@@ -683,8 +906,9 @@ pub fn extract_sign_display(be: &NbtCompound) -> Option<SignDisplay> {
 
     if let Some(front) = be.get_compound("front_text") {
         if let Some(msgs) = front.get_list("messages") {
-            for item in msgs.items() {
+            for (idx, item) in msgs.items().iter().enumerate() {
                 front_lines.push(extract_mc_styled_text(item));
+                collect_nbt_click_events(item, (idx + 1) as u8, false, &mut click_commands);
             }
         }
         if let Some(c) = front.get_string("color") {
@@ -694,8 +918,9 @@ pub fn extract_sign_display(be: &NbtCompound) -> Option<SignDisplay> {
 
         if let Some(back) = be.get_compound("back_text") {
             if let Some(msgs) = back.get_list("messages") {
-                for item in msgs.items() {
+                for (idx, item) in msgs.items().iter().enumerate() {
                     back_lines.push(extract_mc_styled_text(item));
+                    collect_nbt_click_events(item, (idx + 1) as u8, true, &mut click_commands);
                 }
             }
             if let Some(c) = back.get_string("color") {
@@ -704,9 +929,10 @@ pub fn extract_sign_display(be: &NbtCompound) -> Option<SignDisplay> {
             back_glowing = back.get_bool("has_glowing_text").unwrap_or(false);
         }
     } else {
-        for key in ["Text1", "Text2", "Text3", "Text4"] {
+        for (idx, key) in ["Text1", "Text2", "Text3", "Text4"].iter().enumerate() {
             if let Some(tag) = be.get(key) {
                 front_lines.push(extract_mc_styled_text(tag));
+                collect_nbt_click_events(tag, (idx + 1) as u8, false, &mut click_commands);
             }
         }
         if let Some(c) = be.get_string("Color") {
@@ -715,7 +941,7 @@ pub fn extract_sign_display(be: &NbtCompound) -> Option<SignDisplay> {
         front_glowing = be.get_bool("GlowingText").unwrap_or(false);
     }
 
-    // Trim trailing/leading empty lines; skip completely blank decorative signs
+    // Trim trailing/leading empty lines; skip completely blank signs with no commands
     let line_is_blank = |spans: &[StyledSpan]| spans.iter().all(|s| s.text.trim().is_empty());
     let trim_lines = |lines: Vec<Vec<StyledSpan>>| -> Vec<Vec<StyledSpan>> {
         let mut out: Vec<Vec<StyledSpan>> = lines
@@ -743,7 +969,7 @@ pub fn extract_sign_display(be: &NbtCompound) -> Option<SignDisplay> {
     };
     let front_lines = trim_lines(front_lines);
     let back_lines = trim_lines(back_lines);
-    if front_lines.is_empty() && back_lines.is_empty() {
+    if front_lines.is_empty() && back_lines.is_empty() && click_commands.is_empty() {
         return None;
     }
 
@@ -758,7 +984,125 @@ pub fn extract_sign_display(be: &NbtCompound) -> Option<SignDisplay> {
         front_glowing,
         back_glowing,
         is_hanging,
+        click_commands,
     })
+}
+
+fn push_unique_click_cmd(
+    out: &mut Vec<SignClickCommand>,
+    line: u8,
+    is_back: bool,
+    action: &str,
+    value: String,
+) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let cmd = SignClickCommand {
+        line,
+        is_back,
+        action: action.to_ascii_lowercase(),
+        value: trimmed.to_string(),
+    };
+    if !out.contains(&cmd) {
+        out.push(cmd);
+    }
+}
+
+/// Recursively collects `clickEvent` (1.8–1.21.4) and `click_event` (1.21.5+) actions from a sign
+/// message NBT tag (JSON string or native NBT compound/list).
+fn collect_nbt_click_events(
+    tag: &NbtTag,
+    line: u8,
+    is_back: bool,
+    out: &mut Vec<SignClickCommand>,
+) {
+    match tag {
+        NbtTag::String(s) => {
+            let trimmed = s.trim();
+            if (trimmed.starts_with('{') || trimmed.starts_with('['))
+                && let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed)
+            {
+                collect_json_click_events(&val, line, is_back, out);
+            }
+        }
+        NbtTag::Compound(c) => {
+            for key in ["click_event", "clickEvent"] {
+                if let Some(ev) = c.get_compound(key)
+                    && let Some(action) = ev.get_string("action")
+                {
+                    let val = ev
+                        .get_string("command")
+                        .or_else(|| ev.get_string("value"))
+                        .or_else(|| ev.get_string("url"))
+                        .or_else(|| ev.get_string("path"))
+                        .map(|s| s.to_string())
+                        .or_else(|| ev.get_int("page").map(|p| p.to_string()));
+                    if let Some(v) = val {
+                        push_unique_click_cmd(out, line, is_back, action, v);
+                    }
+                }
+            }
+            for list_key in ["extra", "with"] {
+                if let Some(list) = c.get_list(list_key) {
+                    for item in list.items() {
+                        collect_nbt_click_events(item, line, is_back, out);
+                    }
+                }
+            }
+        }
+        NbtTag::List(list) => {
+            for item in list.items() {
+                collect_nbt_click_events(item, line, is_back, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_json_click_events(
+    val: &serde_json::Value,
+    line: u8,
+    is_back: bool,
+    out: &mut Vec<SignClickCommand>,
+) {
+    match val {
+        serde_json::Value::Array(arr) => {
+            for v in arr {
+                collect_json_click_events(v, line, is_back, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for key in ["clickEvent", "click_event"] {
+                if let Some(serde_json::Value::Object(ev)) = map.get(key)
+                    && let Some(action) = ev.get("action").and_then(|v| v.as_str())
+                {
+                    let val_str = ev
+                        .get("command")
+                        .or_else(|| ev.get("value"))
+                        .or_else(|| ev.get("url"))
+                        .or_else(|| ev.get("path"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .or_else(|| {
+                            ev.get("page")
+                                .and_then(|v| v.as_i64())
+                                .map(|p| p.to_string())
+                        });
+                    if let Some(v) = val_str {
+                        push_unique_click_cmd(out, line, is_back, action, v);
+                    }
+                }
+            }
+            for key in ["extra", "with"] {
+                if let Some(child) = map.get(key) {
+                    collect_json_click_events(child, line, is_back, out);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Extracts display name, icon slug, optional subtitle, and world position from an entity NBT compound.
@@ -1597,5 +1941,74 @@ mod tests {
         let ev = extract_entity_display(&holo, &reg).unwrap();
         assert!(!ev.mc_nametag_only);
         assert_eq!(ev.subtitle.as_deref(), Some("Armor Stand"));
+    }
+
+    #[test]
+    fn extracts_sign_click_commands_across_json_and_1215_nbt() {
+        // 1. Pre-1.20 JSON clickEvent (including nested inside `extra` and on blank line)
+        let mut old_sign = NbtCompound::new();
+        old_sign.insert("id", "minecraft:sign");
+        old_sign.insert("x", 1i32);
+        old_sign.insert("y", 64i32);
+        old_sign.insert("z", 2i32);
+        old_sign.insert(
+            "Text1",
+            r#"{"text":"Teleport","clickEvent":{"action":"run_command","value":"/tp @p 10 64 20"}}"#,
+        );
+        old_sign.insert(
+            "Text2",
+            r#"{"text":"","extra":[{"text":"Wiki","clickEvent":{"action":"open_url","value":"https://minecraft.wiki"}}]}"#,
+        );
+        let parsed = extract_sign_display(&old_sign).unwrap();
+        assert_eq!(parsed.click_commands.len(), 2);
+        assert_eq!(parsed.click_commands[0].line, 1);
+        assert!(!parsed.click_commands[0].is_back);
+        assert_eq!(parsed.click_commands[0].formatted_value(), "/tp @p 10 64 20");
+        assert_eq!(parsed.click_commands[1].line, 2);
+        assert_eq!(
+            parsed.click_commands[1].formatted_value(),
+            "[url] https://minecraft.wiki"
+        );
+
+        // 2. 1.21.5+ native NBT click_event (`command` without leading slash) on front + back
+        let mut click_front = NbtCompound::new();
+        click_front.insert("action", "run_command");
+        click_front.insert("command", "say Hello from 1.21.5");
+        let mut msg_front = NbtCompound::new();
+        msg_front.insert("text", "");
+        msg_front.insert("click_event", click_front);
+
+        let mut front = NbtCompound::new();
+        front.insert(
+            "messages",
+            NbtList::from_items(vec![NbtTag::Compound(msg_front)]).unwrap(),
+        );
+
+        let mut click_back = NbtCompound::new();
+        click_back.insert("action", "copy_to_clipboard");
+        click_back.insert("value", "play.example.com");
+        let mut msg_back = NbtCompound::new();
+        msg_back.insert("text", "Copy IP");
+        msg_back.insert("click_event", click_back);
+        let mut back = NbtCompound::new();
+        back.insert(
+            "messages",
+            NbtList::from_items(vec![NbtTag::Compound(msg_back)]).unwrap(),
+        );
+
+        let mut modern = NbtCompound::new();
+        modern.insert("id", "minecraft:sign");
+        modern.insert("x", 0i32);
+        modern.insert("y", 70i32);
+        modern.insert("z", 0i32);
+        modern.insert("front_text", front);
+        modern.insert("back_text", back);
+
+        let pm = extract_sign_display(&modern).unwrap();
+        assert_eq!(pm.click_commands.len(), 2);
+        assert_eq!(pm.click_commands[0].formatted_value(), "/say Hello from 1.21.5");
+        assert!(!pm.click_commands[0].is_back);
+        assert_eq!(pm.click_commands[1].formatted_value(), "[copy] play.example.com");
+        assert!(pm.click_commands[1].is_back);
     }
 }

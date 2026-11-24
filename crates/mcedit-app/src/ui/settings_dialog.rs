@@ -104,6 +104,12 @@ pub fn draw(ctx: &Context, editor: &mut EditorState, renderer: &mut WorldRendere
                 editor.config.save();
             }
             if ui
+                .checkbox(&mut editor.config.show_sign_commands, "Show Sign Commands")
+                .changed()
+            {
+                editor.config.save();
+            }
+            if ui
                 .checkbox(
                     &mut editor.config.show_entity_labels,
                     "Show Entity Names & Textures",

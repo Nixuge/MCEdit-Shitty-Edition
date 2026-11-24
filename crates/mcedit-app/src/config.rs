@@ -140,6 +140,8 @@ pub struct AppConfig {
     #[serde(default = "default_show_barriers")]
     pub show_sign_text: bool,
     #[serde(default = "default_show_barriers")]
+    pub show_sign_commands: bool,
+    #[serde(default = "default_show_barriers")]
     pub show_entity_labels: bool,
     pub show_chunk_borders: bool,
     pub show_terrain_populated: bool,
@@ -201,6 +203,7 @@ impl Default for AppConfig {
             show_entities: true,
             show_block_entities: true,
             show_sign_text: true,
+            show_sign_commands: true,
             show_entity_labels: true,
             show_chunk_borders: false,
             show_terrain_populated: false,
