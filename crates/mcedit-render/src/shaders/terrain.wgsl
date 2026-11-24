@@ -1,6 +1,7 @@
 struct CameraUniform {
     view_proj: mat4x4<f32>,
     cam_pos: vec4<f32>,
+    diff_params: vec4<f32>, // x = overlay_strength, y = only_a_alpha, z = only_b_alpha, w = unused
     lod0_origin: vec4<i32>, // x = origin_cx, y = origin_cz, z = 0/1 mask enabled
     lod0_mask: array<vec4<u32>, 512>, // 256x256 chunk bitmask (radius 128 chunks) of active LOD 0 chunks
 };
@@ -253,4 +254,116 @@ fn fs_translucent(in: VsOut) -> @location(0) vec4<f32> {
         discard;
     }
     return vec4<f32>(tex.rgb * in.color.rgb, tex.a * in.color.a);
+}
+
+// --- World Terrain Compare Diff Overlays ---
+// All overlays preserve underlying block texture detail & 3D face directional shading
+// while tinting with a semi-transparent color overlay:
+//   - Mismatch: vivid crimson red
+//   - Only in World A: bright sky blue (distinct from World B)
+//   - Only in World B: deeper royal/cobalt blue ghost overlay
+
+fn apply_diff_red(base: vec3<f32>, shade: f32) -> vec3<f32> {
+    let strength = u_cam.diff_params.x;
+    let red_target = vec3<f32>(0.94, 0.16, 0.16) * max(shade, 0.35);
+    return mix(base, red_target, strength);
+}
+
+fn apply_diff_gray_a(base: vec3<f32>, shade: f32) -> vec3<f32> {
+    let strength = u_cam.diff_params.x;
+    let blue_tint = vec3<f32>(0.34, 0.76, 1.00) * max(shade, 0.35);
+    return mix(base, blue_tint, strength);
+}
+
+fn apply_diff_gray_b(base: vec3<f32>, shade: f32) -> vec3<f32> {
+    let strength = u_cam.diff_params.x;
+    let blue_tint = vec3<f32>(0.16, 0.36, 0.94) * max(shade, 0.32);
+    return mix(base, blue_tint, strength);
+}
+
+@fragment
+fn fs_packed_depth_only(in: VsOutPacked) -> @location(0) vec4<f32> {
+    let tex = sample_atlas_mip(in.uv);
+    if tex.a < 0.1 {
+        discard;
+    }
+    return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+}
+
+@fragment
+fn fs_depth_only(in: VsOut) -> @location(0) vec4<f32> {
+    let tex = sample_atlas_mip(in.uv);
+    if tex.a < 0.1 {
+        discard;
+    }
+    return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+}
+
+@fragment
+fn fs_packed_diff_red(in: VsOutPacked) -> @location(0) vec4<f32> {
+    let tex = sample_atlas_mip(in.uv);
+    if tex.a < 0.1 {
+        discard;
+    }
+    let col = unpack_flat_color(in.color_packed);
+    let shade = max(col.r, max(col.g, col.b));
+    let rgb = apply_diff_red(tex.rgb * col.rgb, shade);
+    return vec4<f32>(rgb, 1.0);
+}
+
+@fragment
+fn fs_diff_red(in: VsOut) -> @location(0) vec4<f32> {
+    let tex = sample_atlas_mip(in.uv);
+    if tex.a < 0.1 {
+        discard;
+    }
+    let shade = max(in.color.r, max(in.color.g, in.color.b));
+    let rgb = apply_diff_red(tex.rgb * in.color.rgb, shade);
+    return vec4<f32>(rgb, 1.0);
+}
+
+@fragment
+fn fs_packed_diff_gray_a(in: VsOutPacked) -> @location(0) vec4<f32> {
+    let tex = sample_atlas_mip(in.uv);
+    if tex.a < 0.1 {
+        discard;
+    }
+    let col = unpack_flat_color(in.color_packed);
+    let shade = max(col.r, max(col.g, col.b));
+    let rgb = apply_diff_gray_a(tex.rgb * col.rgb, shade);
+    return vec4<f32>(rgb, u_cam.diff_params.y * col.a);
+}
+
+@fragment
+fn fs_diff_gray_a(in: VsOut) -> @location(0) vec4<f32> {
+    let tex = sample_atlas_mip(in.uv);
+    if tex.a < 0.1 {
+        discard;
+    }
+    let shade = max(in.color.r, max(in.color.g, in.color.b));
+    let rgb = apply_diff_gray_a(tex.rgb * in.color.rgb, shade);
+    return vec4<f32>(rgb, u_cam.diff_params.y * in.color.a);
+}
+
+@fragment
+fn fs_packed_diff_gray_b(in: VsOutPacked) -> @location(0) vec4<f32> {
+    let tex = sample_atlas_mip(in.uv);
+    if tex.a < 0.1 {
+        discard;
+    }
+    let col = unpack_flat_color(in.color_packed);
+    let shade = max(col.r, max(col.g, col.b));
+    let rgb = apply_diff_gray_b(tex.rgb * col.rgb, shade);
+    return vec4<f32>(rgb, u_cam.diff_params.z * col.a);
+}
+
+@fragment
+fn fs_diff_gray_b(in: VsOut) -> @location(0) vec4<f32> {
+    let tex = sample_atlas_mip(in.uv);
+    if tex.a < 0.1 {
+        discard;
+    }
+    let shade = max(in.color.r, max(in.color.g, in.color.b));
+    let rgb = apply_diff_gray_b(tex.rgb * in.color.rgb, shade);
+    return vec4<f32>(rgb, u_cam.diff_params.z * in.color.a);
 }

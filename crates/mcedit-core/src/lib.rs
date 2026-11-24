@@ -1,5 +1,6 @@
 pub mod block;
 pub mod chunk;
+pub mod compare;
 pub mod format;
 pub mod lighting;
 pub mod math;
@@ -26,6 +27,7 @@ pub fn hide_barriers() -> bool {
 
 pub use block::{BlockMeta, BlockRegistry, BlockShape, BlockState, BlockStateId, TintKind};
 pub use chunk::{BiomeStorage, Chunk};
+pub use compare::{CompareConfig, CompareViewMode, DiffKind, classify_block_diff, is_effective_air};
 pub use format::{
     FormatError, FormatResult, LodChunkSurface, LodChunkVoxels, RepairReport, SchematicFormat,
     WorldFormat, lod_non_opaque_priority, tinted_map_color,
@@ -33,9 +35,9 @@ pub use format::{
 pub use lighting::LightingEngine;
 pub use math::{BlockPos, BoundingBox, ChunkPos, Face};
 pub use ops::{
-    AnalysisResult, CopyOptions, FlatlandLayer, analyze_box, create_flatland_chunk,
-    default_flatland_layers, delete_entities_in_box, delete_tile_ticks_in_box, extract_volume,
-    fill_blocks, paste_volume,
+    AnalysisResult, CopyOptions, FlatlandLayer, analyze_box, copy_from_format_in_box,
+    create_flatland_chunk, default_flatland_layers, delete_entities_in_box,
+    delete_tile_ticks_in_box, extract_volume, fill_blocks, paste_volume,
 };
 pub use rotation::{TransformOp, transform_block_state, transform_volume};
 pub use section::ChunkSection;

@@ -1136,6 +1136,47 @@ impl WorldFormat for AnvilPost113Format {
         Ok(Some(chunk))
     }
 
+    fn load_chunk_with_registry(
+        &self,
+        dim: DimensionId,
+        pos: ChunkPos,
+        registry: &RwLock<BlockRegistry>,
+    ) -> FormatResult<Option<Chunk>> {
+        let (rx, rz) = pos.region_pos();
+        let Some(rf_arc) = self.get_cached_region(dim, rx, rz, false)? else {
+            return Ok(None);
+        };
+        let (lx, lz) = pos.region_local();
+        let Some(raw) = rf_arc.read().read_chunk_nbt(lx, lz)? else {
+            return Ok(None);
+        };
+        profiler::add(Counter::UncompressedNbtBytes, raw.len() as u64);
+        let (_, root) = {
+            let _p = profiler::scope(Stage::NbtParse);
+            read_nbt_filtered(&raw, Endianness::Big, |k| {
+                matches!(
+                    k,
+                    "DataVersion"
+                        | "yPos"
+                        | "Level"
+                        | "sections"
+                        | "Sections"
+                        | "block_entities"
+                        | "TileEntities"
+                )
+            })?
+        };
+        profiler::add(Counter::ChunksDiskLoaded, 1);
+        let _d = profiler::scope(Stage::ChunkDecode);
+        let chunk = self.decode_chunk_nbt(dim, pos, root, true, |st| {
+            if let Some(id) = registry.read().find_exact(&st) {
+                return id;
+            }
+            registry.write().intern(st)
+        })?;
+        Ok(Some(chunk))
+    }
+
     fn load_chunk_lod_surface(
         &self,
         dim: DimensionId,

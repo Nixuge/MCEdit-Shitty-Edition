@@ -605,3 +605,125 @@ pub fn create_flatland_chunk(
     chunk.dirty = true;
     chunk
 }
+
+/// Copies blocks (and block entities) inside `box_` from a read-only comparison `format_b`
+/// into `world_a`, recording every modified or newly created chunk in `tx` for full Undo/Redo.
+#[allow(clippy::too_many_arguments)]
+pub fn copy_from_format_in_box(
+    world_a: &mut World,
+    dim: DimensionId,
+    format_b: &dyn crate::format::WorldFormat,
+    box_: BoundingBox,
+    chunk_offset: (i32, i32),
+    only_differing: bool,
+    ignore_properties: bool,
+    tx: &mut EditTransaction,
+) -> u64 {
+    let min_y = world_a.min_y();
+    let max_y = world_a.max_y();
+    let clamped = BoundingBox {
+        min: IVec3::new(box_.min.x, box_.min.y.max(min_y), box_.min.z),
+        max: IVec3::new(box_.max.x, box_.max.y.min(max_y), box_.max.z),
+    };
+    if clamped.is_empty() {
+        return 0;
+    }
+
+    let min_sec_y = world_a.format.min_section_y();
+    let max_sec_y = world_a.format.max_section_y();
+    let chunks: Vec<ChunkPos> = clamped.iter_chunks().collect();
+    let mut changed = 0u64;
+    let dx_blocks = chunk_offset.0 * 16;
+    let dz_blocks = chunk_offset.1 * 16;
+
+    for cp_a in chunks {
+        let cp_b = ChunkPos::new(cp_a.cx() + chunk_offset.0, cp_a.cz() + chunk_offset.1);
+        let chunk_b = format_b
+            .load_chunk_with_registry(dim, cp_b, &world_a.registry)
+            .ok()
+            .flatten();
+
+        let a_exists = world_a.chunk_exists(dim, cp_a);
+        if !a_exists {
+            if chunk_b.is_none() {
+                continue;
+            }
+            tx.record_chunk_if_needed(world_a, cp_a);
+            let mut empty_chunk = Chunk::new(cp_a, min_sec_y, max_sec_y);
+            empty_chunk.terrain_populated = true;
+            world_a.insert_chunk(dim, empty_chunk);
+        } else {
+            tx.record_chunk_if_needed(world_a, cp_a);
+        }
+
+        let origin = cp_a.world_origin();
+        let x0 = (clamped.min.x - origin.x).clamp(0, 15) as usize;
+        let x1 = (clamped.max.x - 1 - origin.x).clamp(0, 15) as usize;
+        let z0 = (clamped.min.z - origin.z).clamp(0, 15) as usize;
+        let z1 = (clamped.max.z - 1 - origin.z).clamp(0, 15) as usize;
+
+        let reg_arc = world_a.registry.clone();
+        if let Ok(Some(chunk_a)) = world_a.get_chunk_mut(dim, cp_a) {
+            let reg_r = reg_arc.read();
+            let mut chunk_changed = false;
+            for y in clamped.min.y..clamped.max.y {
+                for z in z0..=z1 {
+                    for x in x0..=x1 {
+                        let b_id = chunk_b
+                            .as_ref()
+                            .map(|cb| cb.get_block(x, y, z))
+                            .unwrap_or(BlockStateId::AIR);
+                        let a_id = chunk_a.get_block(x, y, z);
+                        if only_differing && reg_r.matches(a_id, b_id, ignore_properties) {
+                            continue;
+                        }
+                        if chunk_a.set_block(x, y, z, b_id) {
+                            changed += 1;
+                            chunk_changed = true;
+                        }
+                    }
+                }
+            }
+            // Replace block entities inside clamped box with those from chunk_b
+            let before_be = chunk_a.block_entities.len();
+            chunk_a.block_entities.retain(|be| {
+                if let (Some(bx), Some(by), Some(bz)) =
+                    (be.get_int("x"), be.get_int("y"), be.get_int("z"))
+                {
+                    !clamped.contains(IVec3::new(bx, by, bz))
+                } else {
+                    true
+                }
+            });
+            if chunk_a.block_entities.len() != before_be {
+                chunk_changed = true;
+            }
+            if let Some(cb) = &chunk_b {
+                for be in &cb.block_entities {
+                    if let (Some(bx), Some(by), Some(bz)) =
+                        (be.get_int("x"), be.get_int("y"), be.get_int("z"))
+                    {
+                        let target_pos = IVec3::new(bx - dx_blocks, by, bz - dz_blocks);
+                        if clamped.contains(target_pos) {
+                            let mut cloned = be.clone();
+                            cloned.insert("x", target_pos.x);
+                            cloned.insert("z", target_pos.z);
+                            chunk_a.block_entities.push(cloned);
+                            chunk_changed = true;
+                        }
+                    }
+                }
+            }
+            if chunk_changed {
+                chunk_a.recompute_heightmap(&reg_r);
+                chunk_a.prune_empty_sections();
+                chunk_a.dirty = true;
+            }
+        }
+    }
+
+    if changed > 0 {
+        tx.expand_dirty_box(clamped);
+    }
+    changed
+}

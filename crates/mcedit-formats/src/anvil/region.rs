@@ -202,9 +202,7 @@ impl RegionFile {
         let old_count = (old_off & 0xFF) as usize;
 
         if old_sector >= HEADER_SECTORS && old_sector + old_count <= self.free_sectors.len() {
-            for s in old_sector..old_sector + old_count {
-                self.free_sectors[s] = true;
-            }
+            self.free_sectors[old_sector..old_sector + old_count].fill(true);
         }
 
         // Find contiguous run of `sectors_needed`
@@ -215,9 +213,7 @@ impl RegionFile {
             self.free_sectors.resize(start + sectors_needed, false);
             start
         };
-        for s in new_sector..new_sector + sectors_needed {
-            self.free_sectors[s] = false;
-        }
+        self.free_sectors[new_sector..new_sector + sectors_needed].fill(false);
 
         let mut file = OpenOptions::new().read(true).write(true).open(&self.path)?;
         file.seek(SeekFrom::Start((new_sector * SECTOR_BYTES) as u64))?;
@@ -255,9 +251,7 @@ impl RegionFile {
         let old_sector = (old_off >> 8) as usize;
         let old_count = (old_off & 0xFF) as usize;
         if old_sector >= HEADER_SECTORS && old_sector + old_count <= self.free_sectors.len() {
-            for s in old_sector..old_sector + old_count {
-                self.free_sectors[s] = true;
-            }
+            self.free_sectors[old_sector..old_sector + old_count].fill(true);
         }
         self.offsets[idx] = 0;
         self.timestamps[idx] = 0;

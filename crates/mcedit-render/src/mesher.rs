@@ -159,6 +159,13 @@ pub struct SectionMeshData {
     pub packed_opaque: Vec<PackedCubeQuad>,
     pub packed_cutout: Vec<PackedCubeQuad>,
     pub packed_translucent: Vec<PackedCubeQuad>,
+    // World-Compare diff buckets (empty = 0 bytes, 0 draw calls when compare is off)
+    pub packed_diff_red: Vec<PackedCubeQuad>,
+    pub packed_diff_gray_a: Vec<PackedCubeQuad>,
+    pub packed_diff_gray_b: Vec<PackedCubeQuad>,
+    pub diff_red: MeshBucket,
+    pub diff_gray_a: MeshBucket,
+    pub diff_gray_b: MeshBucket,
 }
 
 impl SectionMeshData {
@@ -169,13 +176,27 @@ impl SectionMeshData {
             && self.packed_opaque.is_empty()
             && self.packed_cutout.is_empty()
             && self.packed_translucent.is_empty()
+            && self.packed_diff_red.is_empty()
+            && self.packed_diff_gray_a.is_empty()
+            && self.packed_diff_gray_b.is_empty()
+            && self.diff_red.is_empty()
+            && self.diff_gray_a.is_empty()
+            && self.diff_gray_b.is_empty()
     }
 
     pub fn byte_size(&self) -> usize {
         self.opaque.byte_size()
             + self.alpha_cutout.byte_size()
             + self.translucent.byte_size()
-            + (self.packed_opaque.len() + self.packed_cutout.len() + self.packed_translucent.len())
+            + self.diff_red.byte_size()
+            + self.diff_gray_a.byte_size()
+            + self.diff_gray_b.byte_size()
+            + (self.packed_opaque.len()
+                + self.packed_cutout.len()
+                + self.packed_translucent.len()
+                + self.packed_diff_red.len()
+                + self.packed_diff_gray_a.len()
+                + self.packed_diff_gray_b.len())
                 * std::mem::size_of::<PackedCubeQuad>()
     }
 
@@ -187,6 +208,15 @@ impl SectionMeshData {
         self.packed_cutout.extend_from_slice(&other.packed_cutout);
         self.packed_translucent
             .extend_from_slice(&other.packed_translucent);
+        self.packed_diff_red
+            .extend_from_slice(&other.packed_diff_red);
+        self.packed_diff_gray_a
+            .extend_from_slice(&other.packed_diff_gray_a);
+        self.packed_diff_gray_b
+            .extend_from_slice(&other.packed_diff_gray_b);
+        self.diff_red.append(&other.diff_red);
+        self.diff_gray_a.append(&other.diff_gray_a);
+        self.diff_gray_b.append(&other.diff_gray_b);
     }
 
     fn bucket_for(&mut self, meta: &BlockMeta, fast_leaves: bool) -> &mut MeshBucket {
@@ -483,7 +513,7 @@ impl<'a> SectionNeighborhood<'a> {
     }
 }
 
-fn mesh_section_into(
+pub(crate) fn mesh_section_into(
     snap: &ChunkNeighborSnapshot,
     sy: i32,
     reg: &BlockRegistry,
@@ -1181,7 +1211,7 @@ fn mesh_section_into(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn emit_box_all_faces(
+pub(crate) fn emit_box_all_faces(
     snap: &ChunkNeighborSnapshot,
     lx: i32,
     wy: i32,
@@ -1209,13 +1239,13 @@ fn emit_box_all_faces(
     }
 }
 
-fn is_ore(reg: &BlockRegistry, id: BlockStateId) -> bool {
+pub(crate) fn is_ore(reg: &BlockRegistry, id: BlockStateId) -> bool {
     let name = &reg.get_state(id).name;
     name.ends_with("_ore")
 }
 
 #[inline]
-fn shaded_color(meta: &BlockMeta, face: Face, light: u8, alpha: u8) -> [u8; 4] {
+pub(crate) fn shaded_color(meta: &BlockMeta, face: Face, light: u8, alpha: u8) -> [u8; 4] {
     let dir_shade = match face {
         Face::Up => 1.0,
         Face::North | Face::South => 0.80,
@@ -1238,7 +1268,7 @@ fn shaded_color(meta: &BlockMeta, face: Face, light: u8, alpha: u8) -> [u8; 4] {
 }
 
 #[inline]
-fn unit_face_corners(face: Face, min: [f32; 3], max: [f32; 3]) -> [[f32; 3]; 4] {
+pub(crate) fn unit_face_corners(face: Face, min: [f32; 3], max: [f32; 3]) -> [[f32; 3]; 4] {
     let [x0, y0, z0] = min;
     let [x1, y1, z1] = max;
     // CCW winding viewed from outside face, matching UV [TL, TR, BR, BL]
@@ -1288,6 +1318,11 @@ impl LodTileOccupancy {
         if let Some(slot) = self.bits.get_mut(word) {
             *slot |= 1u64 << (idx & 63);
         }
+    }
+
+    #[inline]
+    pub(crate) fn set_bit_public(&mut self, cx: usize, cy: usize, cz: usize) {
+        self.set_bit(cx, cy, cz);
     }
 
     #[inline]
@@ -1573,7 +1608,7 @@ fn cz_out(gz: isize, grid_xz: usize) -> bool {
     gz < 0 || gz >= grid_xz as isize
 }
 
-fn greedy_merge_2d<F>(
+pub(crate) fn greedy_merge_2d<F>(
     mask: &mut [Option<([u8; 4], bool)>],
     u_len: usize,
     v_len: usize,
@@ -1788,7 +1823,7 @@ pub fn mesh_lod_overhead_tile(
 }
 
 #[inline]
-fn scale_rgb(c: [u8; 4], factor: f32) -> [u8; 4] {
+pub(crate) fn scale_rgb(c: [u8; 4], factor: f32) -> [u8; 4] {
     [
         (c[0] as f32 * factor).clamp(0.0, 255.0) as u8,
         (c[1] as f32 * factor).clamp(0.0, 255.0) as u8,

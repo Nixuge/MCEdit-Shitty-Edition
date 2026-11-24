@@ -4,6 +4,7 @@ use crate::tools::ToolId;
 use crate::tools::brush::BrushToolState;
 use crate::tools::chunk::ChunkToolState;
 use crate::tools::clone::CloneToolState;
+use crate::tools::compare::{CompareToolState, CompareWorld};
 use crate::tools::fill::FillToolState;
 use crate::tools::filter::FilterToolState;
 use crate::tools::nbt_explorer::NbtExplorerState;
@@ -16,8 +17,9 @@ use crate::ui::world_info::WorldInfoDraft;
 use ahash::{AHashMap, AHashSet};
 use glam::{IVec3, Vec3};
 use mcedit_core::{
-    AnalysisResult, BlockRegistry, BoundingBox, Chunk, ChunkPos, DimensionId, EditTransaction,
-    LightingEngine, LodChunkSurface, LodChunkVoxels, SchematicVolume, World, analyze_box,
+    AnalysisResult, BlockRegistry, BlockStateId, BoundingBox, Chunk, ChunkPos, DiffKind,
+    DimensionId, EditTransaction, Face, LightingEngine, LodChunkSurface, LodChunkVoxels,
+    SchematicVolume, World, analyze_box, classify_block_diff, copy_from_format_in_box,
     extract_volume,
 };
 use mcedit_formats::FormatRegistry;
@@ -25,8 +27,9 @@ use mcedit_plugins::PluginRegistry;
 use mcedit_render::{
     CameraController, ChunkNeighborSnapshot, LodColorTable, LodRaycastIndex, LodRegionKey,
     LodTileOccupancy, MeshOptions, OverlayMeshBuilder, RaycastHit, SectionMeshData,
-    SectionMeshKey, TextureAtlas, ViewMode, WorldRenderer, mesh_chunk_full, mesh_lod_overhead_tile,
-    mesh_lod_voxel_tile, mesh_volume_preview, raycast_or_air,
+    SectionMeshKey, TextureAtlas, ViewMode, WorldRenderer, mesh_chunk_compare, mesh_chunk_full,
+    mesh_lod_overhead_tile, mesh_lod_overhead_tile_compare, mesh_lod_voxel_tile,
+    mesh_lod_voxel_tile_compare, mesh_volume_preview, raycast_or_air, raycast_world_with_lod,
 };
 use parking_lot::RwLock;
 use rayon::prelude::*;
@@ -109,6 +112,7 @@ pub struct EditorState {
     pub nbt: NbtExplorerState,
     pub player: PlayerToolState,
     pub teleport: TeleportToolState,
+    pub compare: CompareToolState,
 
     pub hover_hit: Option<RaycastHit>,
     pub cursor_ray: Option<(Vec3, Vec3)>,
@@ -218,6 +222,7 @@ impl EditorState {
             nbt: NbtExplorerState::default(),
             player: PlayerToolState::default(),
             teleport: TeleportToolState::default(),
+            compare: CompareToolState::default(),
             hover_hit: None,
             cursor_ray: None,
             tool_reach: 8.0,
@@ -624,11 +629,314 @@ impl EditorState {
 
     pub fn close_world(&mut self, renderer: &mut WorldRenderer) {
         self.world = None;
+        self.compare.world_b = None;
+        self.compare.last_error = None;
         self.selection = SelectionState::default();
         self.selected_chunks.clear();
         self.clone.active_volume = None;
         self.clone.placement_origin = None;
         self.invalidate_all_meshes(renderer);
+    }
+
+    pub fn open_compare_world(&mut self, path: &Path, renderer: &mut WorldRenderer) {
+        match CompareWorld::open_readonly(path, &self.registry) {
+            Ok(wb) => {
+                let name = wb.display_name.clone();
+                self.compare.world_b = Some(wb);
+                self.compare.config.enabled = true;
+                self.compare.last_error = None;
+                self.sync_compare_uniform(renderer);
+                self.invalidate_all_meshes(renderer);
+                self.set_toast(format!("Comparing against: {name}"));
+            }
+            Err(e) => {
+                self.compare.last_error = Some(format!("Failed to open World B: {e}"));
+            }
+        }
+    }
+
+    pub fn close_compare_world(&mut self, renderer: &mut WorldRenderer) {
+        self.compare.world_b = None;
+        self.compare.last_error = None;
+        self.invalidate_all_meshes(renderer);
+        self.set_toast("Closed comparison world.");
+    }
+
+    pub fn sync_compare_uniform(&self, renderer: &mut WorldRenderer) {
+        renderer.diff_params = self.compare.config.shader_params();
+    }
+
+    /// Invalidates distant LOD 1/2/2D tiles only (preserving LOD 0 chunks), used when
+    /// transparency sliders finish dragging so distant LOD colors match the updated sliders.
+    pub fn invalidate_lod_meshes_only(&mut self, renderer: &mut WorldRenderer) {
+        let keys: Vec<LodRegionKey> = self
+            .lod_regions_meshed
+            .iter()
+            .map(|(&(_, rx8, rz8), &lod)| LodRegionKey { rx8, rz8, lod })
+            .chain(
+                self.lod2d_regions_meshed
+                    .iter()
+                    .map(|&(_, rx8, rz8)| LodRegionKey { rx8, rz8, lod: 3 }),
+            )
+            .collect();
+        for key in keys {
+            renderer.remove_lod_region(&key);
+        }
+        self.lod_regions_meshed.clear();
+        self.lod2d_regions_meshed.clear();
+        self.lod_regions_inflight.clear();
+        self.lod_region_chunks.clear();
+        self.lod_raycast.clear();
+        self.lod_schedule_dirty = true;
+    }
+
+    /// Returns `(DiffKind, block_a, block_b)` at world coordinate `pos` using only in-memory
+    /// cached chunks (zero disk I/O). Returns `None` if either chunk is still streaming.
+    pub fn inspect_compare_block(
+        &self,
+        pos: IVec3,
+    ) -> Option<(DiffKind, BlockStateId, BlockStateId)> {
+        let world = self.world.as_ref()?;
+        let wb = self.compare.world_b.as_ref()?;
+        let dim = world.active_dim;
+        let cp_a = ChunkPos::new(pos.x.div_euclid(16), pos.z.div_euclid(16));
+        let lx = pos.x.rem_euclid(16) as usize;
+        let lz = pos.z.rem_euclid(16) as usize;
+
+        let id_a = if pos.y < world.min_y() || pos.y >= world.max_y() || !world.chunk_exists(dim, cp_a)
+        {
+            BlockStateId::AIR
+        } else if let Some(c) = world.get_loaded_chunk(dim, cp_a) {
+            c.get_block(lx, pos.y, lz)
+        } else {
+            let cache = self.mesh_chunk_cache.read();
+            let c = cache.get(&(dim, cp_a))?;
+            c.get_block(lx, pos.y, lz)
+        };
+
+        let off = self.compare.config.chunk_offset;
+        let pos_b = IVec3::new(pos.x + off.0 * 16, pos.y, pos.z + off.1 * 16);
+        let id_b = wb.get_cached_block(dim, pos_b)?;
+
+        let reg = self.registry.read();
+        let kind = classify_block_diff(
+            id_a,
+            id_b,
+            &reg,
+            self.compare.config.ignore_properties,
+            !self.config.show_barriers,
+        );
+        Some((kind, id_a, id_b))
+    }
+
+    /// Raycasts the active world (and cached World B chunks when Compare mode is active)
+    /// so cursor hover works seamlessly on B-only ghost blocks as well as World A blocks.
+    pub fn raycast_cursor(&self, origin: Vec3, dir: Vec3, max_dist: f32) -> Option<RaycastHit> {
+        let world = self.world.as_ref()?;
+        let dim = world.active_dim;
+        let hit_a = raycast_world_with_lod(
+            world,
+            dim,
+            Some(&self.lod_raycast),
+            origin,
+            dir,
+            max_dist,
+            self.camera.mode,
+        );
+        if !self.compare.is_active() || !self.compare.config.show_only_b {
+            return hit_a;
+        }
+        let Some(wb) = &self.compare.world_b else {
+            return hit_a;
+        };
+        let hit_b = self.raycast_compare_world_b(wb, dim, origin, dir, max_dist);
+        match (hit_a, hit_b) {
+            (Some(a), Some(b)) => Some(if b.distance < a.distance { b } else { a }),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        }
+    }
+
+    fn raycast_compare_world_b(
+        &self,
+        wb: &CompareWorld,
+        dim: DimensionId,
+        origin: Vec3,
+        dir: Vec3,
+        max_distance: f32,
+    ) -> Option<RaycastHit> {
+        if dir.length_squared() < 1e-10 {
+            return None;
+        }
+        let dir = dir.normalize();
+        let off = self.compare.config.chunk_offset;
+        let min_y = wb.min_y;
+        let max_y = wb.max_y;
+        let cache = wb.chunk_cache.read();
+
+        if self.camera.mode == ViewMode::Chunk2D {
+            let wx = origin.x.floor() as i32;
+            let wz = origin.z.floor() as i32;
+            let cp_b = ChunkPos::new(wx.div_euclid(16) + off.0, wz.div_euclid(16) + off.1);
+            if let Some(chunk) = cache.get(&(dim, cp_b)) {
+                let lx = wx.rem_euclid(16) as usize;
+                let lz = wz.rem_euclid(16) as usize;
+                let h = chunk.heightmap[(lz << 4) | lx];
+                for y in (min_y..=h.min(max_y - 1)).rev() {
+                    if chunk.get_block(lx, y, lz) != BlockStateId::AIR {
+                        let pos = IVec3::new(wx, y, wz);
+                        return Some(RaycastHit {
+                            block_pos: pos,
+                            adjacent_pos: pos + IVec3::Y,
+                            face: Face::Up,
+                            distance: (origin.y - y as f32).abs(),
+                        });
+                    }
+                }
+            }
+            return None;
+        }
+
+        let mut t = 0.0f32;
+        if origin.y >= max_y as f32 {
+            if dir.y >= -1e-6 {
+                return None;
+            }
+            let dt = (max_y as f32 - 0.001 - origin.y) / dir.y;
+            if dt > max_distance {
+                return None;
+            }
+            t = dt.max(0.0);
+        } else if origin.y < min_y as f32 {
+            if dir.y <= 1e-6 {
+                return None;
+            }
+            let dt = (min_y as f32 + 0.001 - origin.y) / dir.y;
+            if dt > max_distance {
+                return None;
+            }
+            t = dt.max(0.0);
+        }
+
+        let step_sign = IVec3::new(
+            if dir.x >= 0.0 { 1 } else { -1 },
+            if dir.y >= 0.0 { 1 } else { -1 },
+            if dir.z >= 0.0 { 1 } else { -1 },
+        );
+        let inv_dir = Vec3::new(
+            if dir.x.abs() > 1e-8 { 1.0 / dir.x } else { f32::INFINITY },
+            if dir.y.abs() > 1e-8 { 1.0 / dir.y } else { f32::INFINITY },
+            if dir.z.abs() > 1e-8 { 1.0 / dir.z } else { f32::INFINITY },
+        );
+
+        let mut hit_face = Face::Up;
+        let max_steps = (max_distance.min(512.0) * 2.0) as usize;
+        for _ in 0..max_steps {
+            if t > max_distance {
+                break;
+            }
+            let p = origin + dir * (t + 1e-4);
+            let voxel = IVec3::new(
+                p.x.floor() as i32,
+                p.y.floor() as i32,
+                p.z.floor() as i32,
+            );
+            if (voxel.y < min_y && step_sign.y < 0) || (voxel.y >= max_y && step_sign.y > 0) {
+                break;
+            }
+            let cp_b = ChunkPos::new(
+                voxel.x.div_euclid(16) + off.0,
+                voxel.z.div_euclid(16) + off.1,
+            );
+            if let Some(chunk) = cache.get(&(dim, cp_b))
+                && voxel.y >= min_y
+                && voxel.y < max_y
+            {
+                let sy = voxel.y.div_euclid(16);
+                if let Some(sec) = chunk.sections.get(&sy)
+                    && !sec.is_all_air()
+                {
+                    let b = sec.get_block(
+                        voxel.x.rem_euclid(16) as usize,
+                        voxel.y.rem_euclid(16) as usize,
+                        voxel.z.rem_euclid(16) as usize,
+                    );
+                    if b != BlockStateId::AIR {
+                        return Some(RaycastHit {
+                            block_pos: voxel,
+                            adjacent_pos: voxel + hit_face.normal(),
+                            face: hit_face,
+                            distance: t,
+                        });
+                    }
+                }
+            }
+            let next_x = if step_sign.x > 0 {
+                (voxel.x + 1) as f32
+            } else {
+                voxel.x as f32
+            };
+            let next_y = if step_sign.y > 0 {
+                (voxel.y + 1) as f32
+            } else {
+                voxel.y as f32
+            };
+            let next_z = if step_sign.z > 0 {
+                (voxel.z + 1) as f32
+            } else {
+                voxel.z as f32
+            };
+            let tx = (next_x - origin.x) * inv_dir.x;
+            let ty = (next_y - origin.y) * inv_dir.y;
+            let tz = (next_z - origin.z) * inv_dir.z;
+            if tx <= ty && tx <= tz {
+                t = tx.max(t + 1e-4);
+                hit_face = if step_sign.x > 0 { Face::West } else { Face::East };
+            } else if ty <= tz {
+                t = ty.max(t + 1e-4);
+                hit_face = if step_sign.y > 0 { Face::Down } else { Face::Up };
+            } else {
+                t = tz.max(t + 1e-4);
+                hit_face = if step_sign.z > 0 { Face::North } else { Face::South };
+            }
+        }
+        None
+    }
+
+    pub fn copy_compare_b_to_a_in_selection(&mut self, renderer: &mut WorldRenderer) {
+        let Some(box_) = self.selection.box_ else {
+            return;
+        };
+        let Some(format_b) = self.compare.world_b.as_ref().map(|wb| wb.format.clone()) else {
+            return;
+        };
+        let chunk_offset = self.compare.config.chunk_offset;
+        let only_differing = self.compare.copy_only_differing;
+        let ignore_properties = self.compare.config.ignore_properties;
+
+        let Some(world) = &mut self.world else {
+            return;
+        };
+        let dim = world.active_dim;
+        let mut tx = EditTransaction::new("Copy from World B", dim, Some(box_));
+        let changed = copy_from_format_in_box(
+            world,
+            dim,
+            format_b.as_ref(),
+            box_,
+            chunk_offset,
+            only_differing,
+            ignore_properties,
+            &mut tx,
+        );
+        if changed > 0 {
+            tx.commit(world);
+            self.invalidate_box(box_, renderer);
+            self.set_toast(format!("Copied {changed} blocks from World B (Ctrl+Z to undo)."));
+        } else {
+            self.set_toast("No differing blocks found in selection.");
+        }
     }
 
     pub fn switch_dimension(&mut self, new_dim: DimensionId, renderer: &mut WorldRenderer) {
@@ -1063,11 +1371,14 @@ impl EditorState {
             (self.camera.pos.z / 16.0).floor() as i32,
         );
         renderer.set_camera_chunk(cam_cp);
+        renderer.diff_params = self.compare.config.shader_params();
 
         // 1. Drain completed async meshes from rayon with a 4ms frame time budget so
         //    bursts of nearby 8x8 chunks appear on screen immediately in a single frame.
         let upload_start = Instant::now();
         let mut uploaded_any = false;
+        let cmp_active = self.compare.is_active();
+        let cmp_off = self.compare.config.chunk_offset;
         while upload_start.elapsed() < Duration::from_millis(4) {
             let Ok(result) = self.mesh_rx.try_recv() else {
                 break;
@@ -1085,9 +1396,16 @@ impl EditorState {
                     }
                     uploaded_any = true;
                     self.lod0_inflight.remove(&(dim, pos));
+                    let exists_in_b = cmp_active
+                        && self.compare.world_b.as_ref().is_some_and(|wb| {
+                            wb.chunk_exists(
+                                dim,
+                                ChunkPos::new(pos.cx() + cmp_off.0, pos.cz() + cmp_off.1),
+                            )
+                        });
                     if let Some(world) = &mut self.world
                         && world.active_dim == dim
-                        && world.chunk_exists(dim, pos)
+                        && (world.chunk_exists(dim, pos) || exists_in_b)
                     {
                         if let Some(clean_chunk) = loaded_clean {
                             world.insert_loaded_clean_chunk(dim, *clean_chunk);
@@ -1217,6 +1535,16 @@ impl EditorState {
             for cp in world.list_chunks(dim) {
                 tile_set.insert((cp.cx().div_euclid(8), cp.cz().div_euclid(8)));
             }
+            if self.compare.is_active()
+                && let Some(wb) = &self.compare.world_b
+                && let Some(b_chunks) = wb.known_chunks.get(&dim)
+            {
+                let off = self.compare.config.chunk_offset;
+                for &cp_b in b_chunks {
+                    let cp_a = ChunkPos::new(cp_b.cx() - off.0, cp_b.cz() - off.1);
+                    tile_set.insert((cp_a.cx().div_euclid(8), cp_a.cz().div_euclid(8)));
+                }
+            }
             self.active_lod_tiles = tile_set.into_iter().collect();
         }
 
@@ -1289,6 +1617,29 @@ impl EditorState {
         let Some(world) = &self.world else {
             return;
         };
+        let compare_ctx = if self.compare.is_active() {
+            self.compare
+                .world_b
+                .as_ref()
+                .map(|wb| (wb.format.clone(), wb.chunk_cache.clone(), self.compare.config))
+        } else {
+            None
+        };
+        let compare_wb_ref = if self.compare.is_active() {
+            self.compare.world_b.as_ref()
+        } else {
+            None
+        };
+        let cmp_offset = self.compare.config.chunk_offset;
+        let chunk_exists_union = |cp: ChunkPos| -> bool {
+            world.chunk_exists(dim, cp)
+                || compare_wb_ref.is_some_and(|wb| {
+                    wb.chunk_exists(
+                        dim,
+                        ChunkPos::new(cp.cx() + cmp_offset.0, cp.cz() + cmp_offset.1),
+                    )
+                })
+        };
 
         // 4. Schedule LOD 0 full-3D chunks completely off the main thread (when detail_r > 0).
         //    Tier 1: Immediate 8x8 / 9x9 area around the player (`dx, dz in -4..=4`) + edited priority chunks
@@ -1328,7 +1679,7 @@ impl EditorState {
 
             let mut urgent_targets: Vec<ChunkPos> = Vec::new();
             while let Some(cp) = self.lod0_priority_queue.pop_front() {
-                if world.chunk_exists(dim, cp)
+                if chunk_exists_union(cp)
                     && !self.lod0_meshed.contains(&(dim, cp))
                     && !self.lod0_inflight.contains(&(dim, cp))
                     && !urgent_targets.contains(&cp)
@@ -1344,7 +1695,7 @@ impl EditorState {
                 }
                 if dx.abs() <= 4 && dz.abs() <= 4 {
                     let cp = ChunkPos::new(cam_cp.cx() + dx, cam_cp.cz() + dz);
-                    if world.chunk_exists(dim, cp) && !self.lod0_meshed.contains(&(dim, cp)) {
+                    if chunk_exists_union(cp) && !self.lod0_meshed.contains(&(dim, cp)) {
                         near_area_pending = true;
                         if !self.lod0_inflight.contains(&(dim, cp)) && !urgent_targets.contains(&cp)
                         {
@@ -1400,7 +1751,7 @@ impl EditorState {
                     self.spiral_cursor += 1;
                     scanned_this_frame += 1;
                     let cp = ChunkPos::new(cam_cp.cx() + dx, cam_cp.cz() + dz);
-                    if world.chunk_exists(dim, cp)
+                    if chunk_exists_union(cp)
                         && !self.lod0_meshed.contains(&(dim, cp))
                         && !self.lod0_inflight.contains(&(dim, cp))
                     {
@@ -1443,6 +1794,7 @@ impl EditorState {
                 let task_gen = self.world_gen;
                 let active_gen = self.active_world_gen.clone();
                 let urgent_near = self.urgent_near_active.clone();
+                let cmp_batch = compare_ctx.clone();
                 let mesh_opts = MeshOptions {
                     fast_leaves: self.config.fast_leaves,
                     rough_graphics: self.config.rough_graphics,
@@ -1456,7 +1808,8 @@ impl EditorState {
                     .map(|&cp| {
                         let dx = cp.cx() - cam_cp.cx();
                         let dz = cp.cz() - cam_cp.cz();
-                        let cull_ug = !is_urgent
+                        let cull_ug = cmp_batch.is_none()
+                            && !is_urgent
                             && dim == DimensionId::Overworld
                             && cam_above_ground
                             && !self.config.show_hidden_ores
@@ -1517,6 +1870,7 @@ impl EditorState {
                     }
 
                     if !needed.is_empty() {
+                        let use_exact_reg = cmp_batch.is_some();
                         let loaded_from_disk: Vec<(ChunkPos, Arc<Chunk>)> = needed
                             .into_par_iter()
                             .filter_map(|p| {
@@ -1528,12 +1882,20 @@ impl EditorState {
                                 if let Some(existing) = cache_arc.read().get(&(dim, p)).cloned() {
                                     return Some((p, existing));
                                 }
-                                let reg = reg_arc.read();
-                                format_arc
-                                    .load_chunk_readonly(dim, p, &reg)
-                                    .ok()
-                                    .flatten()
-                                    .map(|c| (p, Arc::new(c)))
+                                if use_exact_reg {
+                                    format_arc
+                                        .load_chunk_with_registry(dim, p, &reg_arc)
+                                        .ok()
+                                        .flatten()
+                                        .map(|c| (p, Arc::new(c)))
+                                } else {
+                                    let reg = reg_arc.read();
+                                    format_arc
+                                        .load_chunk_readonly(dim, p, &reg)
+                                        .ok()
+                                        .flatten()
+                                        .map(|c| (p, Arc::new(c)))
+                                }
                             })
                             .collect();
 
@@ -1544,6 +1906,59 @@ impl EditorState {
                             }
                             for (p, arc_c) in loaded_from_disk {
                                 cache_w.insert((dim, p), arc_c);
+                            }
+                        }
+                    }
+
+                    // If Compare mode is active, load World B's matching chunks + 4 neighbors in parallel
+                    if let Some((fmt_b, cache_b, cmp_cfg)) = &cmp_batch {
+                        let off = cmp_cfg.chunk_offset;
+                        let mut needed_b: Vec<ChunkPos> = Vec::with_capacity(batch_targets.len() * 5);
+                        {
+                            let cb_r = cache_b.read();
+                            for &cp in &batch_targets {
+                                for nb_a in [
+                                    cp,
+                                    ChunkPos::new(cp.cx() + 1, cp.cz()),
+                                    ChunkPos::new(cp.cx() - 1, cp.cz()),
+                                    ChunkPos::new(cp.cx(), cp.cz() + 1),
+                                    ChunkPos::new(cp.cx(), cp.cz() - 1),
+                                ] {
+                                    let p_b = ChunkPos::new(nb_a.cx() + off.0, nb_a.cz() + off.1);
+                                    if !cb_r.contains_key(&(dim, p_b)) && !needed_b.contains(&p_b) {
+                                        needed_b.push(p_b);
+                                    }
+                                }
+                            }
+                        }
+                        if !needed_b.is_empty() {
+                            let loaded_b: Vec<(ChunkPos, Arc<Chunk>)> = needed_b
+                                .into_par_iter()
+                                .filter_map(|p_b| {
+                                    if active_gen.load(Ordering::Relaxed) != task_gen
+                                        || (!is_urgent && urgent_near.load(Ordering::Relaxed) > 0)
+                                    {
+                                        return None;
+                                    }
+                                    if let Some(existing) = cache_b.read().get(&(dim, p_b)).cloned()
+                                    {
+                                        return Some((p_b, existing));
+                                    }
+                                    fmt_b
+                                        .load_chunk_with_registry(dim, p_b, &reg_arc)
+                                        .ok()
+                                        .flatten()
+                                        .map(|c| (p_b, Arc::new(c)))
+                                })
+                                .collect();
+                            if !loaded_b.is_empty() {
+                                let mut cb_w = cache_b.write();
+                                if cb_w.len() > 8192 {
+                                    cb_w.clear();
+                                }
+                                for (p_b, arc_c) in loaded_b {
+                                    cb_w.insert((dim, p_b), arc_c);
+                                }
                             }
                         }
                     }
@@ -1571,14 +1986,80 @@ impl EditorState {
                             return;
                         }
 
-                        let fetch = |p: ChunkPos| -> Option<Arc<Chunk>> {
+                        let fetch_a = |p: ChunkPos| -> Option<Arc<Chunk>> {
                             if let Some(dirty_opt) = dirty_overrides.get(&p) {
                                 return dirty_opt.clone();
                             }
                             cache_arc.read().get(&(dim, p)).cloned()
                         };
 
-                        let Some(center) = fetch(cp) else {
+                        if let Some((_, cache_b, cmp_cfg)) = &cmp_batch {
+                            let off = cmp_cfg.chunk_offset;
+                            let fetch_b = |p_a: ChunkPos| -> Option<Arc<Chunk>> {
+                                let p_b = ChunkPos::new(p_a.cx() + off.0, p_a.cz() + off.1);
+                                cache_b.read().get(&(dim, p_b)).cloned()
+                            };
+                            let center_a = fetch_a(cp);
+                            let center_b = fetch_b(cp);
+                            if center_a.is_none() && center_b.is_none() {
+                                if is_urgent {
+                                    urgent_near.fetch_sub(1, Ordering::Relaxed);
+                                }
+                                let _ = tx.send(MeshTaskResult::Lod0Chunk {
+                                    world_gen: task_gen,
+                                    dim,
+                                    pos: cp,
+                                    mesh: SectionMeshData::default(),
+                                    loaded_clean: None,
+                                });
+                                return;
+                            }
+                            let loaded_clean = if !dirty_overrides.contains_key(&cp) {
+                                center_a.as_ref().map(|c| Box::new((**c).clone()))
+                            } else {
+                                None
+                            };
+                            let snap_a = center_a.map(|center| ChunkNeighborSnapshot {
+                                center,
+                                east: fetch_a(ChunkPos::new(cp.cx() + 1, cp.cz())),
+                                west: fetch_a(ChunkPos::new(cp.cx() - 1, cp.cz())),
+                                south: fetch_a(ChunkPos::new(cp.cx(), cp.cz() + 1)),
+                                north: fetch_a(ChunkPos::new(cp.cx(), cp.cz() - 1)),
+                            });
+                            let snap_b = center_b.map(|center| ChunkNeighborSnapshot {
+                                center,
+                                east: fetch_b(ChunkPos::new(cp.cx() + 1, cp.cz())),
+                                west: fetch_b(ChunkPos::new(cp.cx() - 1, cp.cz())),
+                                south: fetch_b(ChunkPos::new(cp.cx(), cp.cz() + 1)),
+                                north: fetch_b(ChunkPos::new(cp.cx(), cp.cz() - 1)),
+                            });
+                            let mut opts = mesh_opts;
+                            opts.cull_underground = cull_ug;
+                            let mesh = {
+                                let reg = reg_arc.read();
+                                mesh_chunk_compare(
+                                    cp,
+                                    snap_a.as_ref(),
+                                    snap_b.as_ref(),
+                                    &reg,
+                                    opts,
+                                    *cmp_cfg,
+                                )
+                            };
+                            if is_urgent {
+                                urgent_near.fetch_sub(1, Ordering::Relaxed);
+                            }
+                            let _ = tx.send(MeshTaskResult::Lod0Chunk {
+                                world_gen: task_gen,
+                                dim,
+                                pos: cp,
+                                mesh,
+                                loaded_clean,
+                            });
+                            return;
+                        }
+
+                        let Some(center) = fetch_a(cp) else {
                             if is_urgent {
                                 urgent_near.fetch_sub(1, Ordering::Relaxed);
                             }
@@ -1591,10 +2072,10 @@ impl EditorState {
                             });
                             return;
                         };
-                        let east = fetch(ChunkPos::new(cp.cx() + 1, cp.cz()));
-                        let west = fetch(ChunkPos::new(cp.cx() - 1, cp.cz()));
-                        let south = fetch(ChunkPos::new(cp.cx(), cp.cz() + 1));
-                        let north = fetch(ChunkPos::new(cp.cx(), cp.cz() - 1));
+                        let east = fetch_a(ChunkPos::new(cp.cx() + 1, cp.cz()));
+                        let west = fetch_a(ChunkPos::new(cp.cx() - 1, cp.cz()));
+                        let south = fetch_a(ChunkPos::new(cp.cx(), cp.cz() + 1));
+                        let north = fetch_a(ChunkPos::new(cp.cx(), cp.cz() - 1));
 
                         let loaded_clean = if !dirty_overrides.contains_key(&cp) {
                             Some(Box::new((*center).clone()))
@@ -1726,16 +2207,27 @@ impl EditorState {
                     lod: desired_lod,
                 };
 
-                let mut tile_chunks: Vec<(ChunkPos, Option<Arc<Chunk>>)> = Vec::new();
+                let mut tile_chunks: Vec<(ChunkPos, Option<Arc<Chunk>>, bool, bool)> = Vec::new();
                 for lz in 0..8 {
                     for lx in 0..8 {
                         let cp = ChunkPos::new(rx8 * 8 + lx, rz8 * 8 + lz);
-                        if world.chunk_exists(dim, cp) {
-                            let override_chunk = world
-                                .dirty_chunks
-                                .get(&(dim, cp))
-                                .and_then(|o| o.as_ref().cloned().map(Arc::new));
-                            tile_chunks.push((cp, override_chunk));
+                        let in_a = world.chunk_exists(dim, cp);
+                        let in_b = compare_wb_ref.is_some_and(|wb| {
+                            wb.chunk_exists(
+                                dim,
+                                ChunkPos::new(cp.cx() + cmp_offset.0, cp.cz() + cmp_offset.1),
+                            )
+                        });
+                        if in_a || in_b {
+                            let override_chunk = if in_a {
+                                world
+                                    .dirty_chunks
+                                    .get(&(dim, cp))
+                                    .and_then(|o| o.as_ref().cloned().map(Arc::new))
+                            } else {
+                                None
+                            };
+                            tile_chunks.push((cp, override_chunk, in_a, in_b));
                         }
                     }
                 }
@@ -1759,16 +2251,109 @@ impl EditorState {
                 let tx = self.mesh_tx.clone();
                 let task_gen = self.world_gen;
                 let active_gen = self.active_world_gen.clone();
+                let cmp_lod = compare_ctx.clone();
+                let tile_min_y = compare_wb_ref.map_or(min_y, |wb| min_y.min(wb.min_y));
+                let tile_max_y = compare_wb_ref.map_or(max_y, |wb| max_y.max(wb.max_y));
 
                 if is_2d {
                     rayon::spawn(move || {
                         if active_gen.load(Ordering::Relaxed) != task_gen {
                             return;
                         }
+                        if let Some((fmt_b, cache_b, cmp_cfg)) = cmp_lod {
+                            let off = cmp_cfg.chunk_offset;
+                            let pairs: Vec<(
+                                ChunkPos,
+                                Option<LodChunkSurface>,
+                                Option<LodChunkSurface>,
+                            )> = tile_chunks
+                                .into_par_iter()
+                                .filter_map(|(cp, override_c, in_a, in_b)| {
+                                    if active_gen.load(Ordering::Relaxed) != task_gen {
+                                        return None;
+                                    }
+                                    let surf_a = if in_a {
+                                        let cached = override_c
+                                            .or_else(|| cache_arc.read().get(&(dim, cp)).cloned());
+                                        let c = cached.or_else(|| {
+                                            format_arc
+                                                .load_chunk_with_registry(dim, cp, &reg_arc)
+                                                .ok()
+                                                .flatten()
+                                                .map(Arc::new)
+                                        });
+                                        c.map(|c| LodChunkSurface::from_chunk(&c, &reg_arc.read()))
+                                    } else {
+                                        None
+                                    };
+                                    let surf_b = if in_b {
+                                        let cp_b = ChunkPos::new(cp.cx() + off.0, cp.cz() + off.1);
+                                        let cached = cache_b.read().get(&(dim, cp_b)).cloned();
+                                        let c = cached.or_else(|| {
+                                            fmt_b
+                                                .load_chunk_with_registry(dim, cp_b, &reg_arc)
+                                                .ok()
+                                                .flatten()
+                                                .map(Arc::new)
+                                        });
+                                        c.map(|c| {
+                                            let mut s =
+                                                LodChunkSurface::from_chunk(&c, &reg_arc.read());
+                                            s.pos = cp;
+                                            s
+                                        })
+                                    } else {
+                                        None
+                                    };
+                                    if surf_a.is_some() || surf_b.is_some() {
+                                        Some((cp, surf_a, surf_b))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            if active_gen.load(Ordering::Relaxed) != task_gen {
+                                return;
+                            }
+                            let mut surfs_a = Vec::new();
+                            let mut surfs_b = Vec::new();
+                            let mut covered_chunks = Vec::with_capacity(pairs.len());
+                            for (cp, sa, sb) in pairs {
+                                covered_chunks.push(cp);
+                                if let Some(s) = sa {
+                                    surfs_a.push(s);
+                                }
+                                if let Some(s) = sb {
+                                    surfs_b.push(s);
+                                }
+                            }
+                            let reg = reg_arc.read();
+                            let mesh = mesh_lod_overhead_tile_compare(
+                                rx8,
+                                rz8,
+                                &surfs_a,
+                                &surfs_b,
+                                step as usize,
+                                &palette_arc,
+                                tile_min_y,
+                                tile_max_y,
+                                &reg,
+                                cmp_cfg,
+                            );
+                            let _ = tx.send(MeshTaskResult::LodRegion {
+                                world_gen: task_gen,
+                                dim,
+                                key,
+                                mesh,
+                                occupancy: None,
+                                covered_chunks,
+                            });
+                            return;
+                        }
                         let surfaces: Vec<LodChunkSurface> = tile_chunks
                             .into_par_iter()
-                            .filter_map(|(cp, override_c)| {
-                                if active_gen.load(Ordering::Relaxed) != task_gen {
+                            .filter_map(|(cp, override_c, in_a, _)| {
+                                if !in_a || active_gen.load(Ordering::Relaxed) != task_gen {
                                     return None;
                                 }
                                 let cached = override_c
@@ -1811,10 +2396,108 @@ impl EditorState {
                         if active_gen.load(Ordering::Relaxed) != task_gen {
                             return;
                         }
+                        if let Some((fmt_b, cache_b, cmp_cfg)) = cmp_lod {
+                            let off = cmp_cfg.chunk_offset;
+                            let pairs: Vec<(
+                                ChunkPos,
+                                Option<LodChunkVoxels>,
+                                Option<LodChunkVoxels>,
+                            )> = tile_chunks
+                                .into_par_iter()
+                                .filter_map(|(cp, override_c, in_a, in_b)| {
+                                    if active_gen.load(Ordering::Relaxed) != task_gen {
+                                        return None;
+                                    }
+                                    let vox_a = if in_a {
+                                        let cached = override_c
+                                            .or_else(|| cache_arc.read().get(&(dim, cp)).cloned());
+                                        let c = cached.or_else(|| {
+                                            format_arc
+                                                .load_chunk_with_registry(dim, cp, &reg_arc)
+                                                .ok()
+                                                .flatten()
+                                                .map(Arc::new)
+                                        });
+                                        c.map(|c| {
+                                            LodChunkVoxels::from_chunk_exact(
+                                                &c,
+                                                step,
+                                                &reg_arc.read(),
+                                            )
+                                        })
+                                    } else {
+                                        None
+                                    };
+                                    let vox_b = if in_b {
+                                        let cp_b = ChunkPos::new(cp.cx() + off.0, cp.cz() + off.1);
+                                        let cached = cache_b.read().get(&(dim, cp_b)).cloned();
+                                        let c = cached.or_else(|| {
+                                            fmt_b
+                                                .load_chunk_with_registry(dim, cp_b, &reg_arc)
+                                                .ok()
+                                                .flatten()
+                                                .map(Arc::new)
+                                        });
+                                        c.map(|c| {
+                                            let mut v = LodChunkVoxels::from_chunk_exact(
+                                                &c,
+                                                step,
+                                                &reg_arc.read(),
+                                            );
+                                            v.pos = cp;
+                                            v
+                                        })
+                                    } else {
+                                        None
+                                    };
+                                    if vox_a.is_some() || vox_b.is_some() {
+                                        Some((cp, vox_a, vox_b))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            if active_gen.load(Ordering::Relaxed) != task_gen {
+                                return;
+                            }
+                            let mut voxels_a = Vec::new();
+                            let mut voxels_b = Vec::new();
+                            let mut covered_chunks = Vec::with_capacity(pairs.len());
+                            for (cp, va, vb) in pairs {
+                                covered_chunks.push(cp);
+                                if let Some(v) = va {
+                                    voxels_a.push(v);
+                                }
+                                if let Some(v) = vb {
+                                    voxels_b.push(v);
+                                }
+                            }
+                            let reg = reg_arc.read();
+                            let (mesh, occ) = mesh_lod_voxel_tile_compare(
+                                rx8,
+                                rz8,
+                                &voxels_a,
+                                &voxels_b,
+                                step,
+                                &palette_arc,
+                                tile_min_y,
+                                &reg,
+                                cmp_cfg,
+                            );
+                            let _ = tx.send(MeshTaskResult::LodRegion {
+                                world_gen: task_gen,
+                                dim,
+                                key,
+                                mesh,
+                                occupancy: Some(Arc::new(occ)),
+                                covered_chunks,
+                            });
+                            return;
+                        }
                         let voxels: Vec<LodChunkVoxels> = tile_chunks
                             .into_par_iter()
-                            .filter_map(|(cp, override_c)| {
-                                if active_gen.load(Ordering::Relaxed) != task_gen {
+                            .filter_map(|(cp, override_c, in_a, _)| {
+                                if !in_a || active_gen.load(Ordering::Relaxed) != task_gen {
                                     return None;
                                 }
                                 let cached = override_c
@@ -1921,6 +2604,20 @@ impl EditorState {
         for cp in world.list_chunks(dim) {
             region_set.insert(cp.region_pos());
         }
+        let compare_wb = if self.compare.is_active() {
+            self.compare.world_b.as_ref()
+        } else {
+            None
+        };
+        let cmp_off = self.compare.config.chunk_offset;
+        if let Some(wb) = compare_wb
+            && let Some(b_chunks) = wb.known_chunks.get(&dim)
+        {
+            for &cp_b in b_chunks {
+                let cp_a = ChunkPos::new(cp_b.cx() - cmp_off.0, cp_b.cz() - cmp_off.1);
+                region_set.insert(cp_a.region_pos());
+            }
+        }
         let mut regions: Vec<(i32, i32)> = region_set.into_iter().collect();
         regions.sort_unstable();
 
@@ -1933,7 +2630,15 @@ impl EditorState {
             max_cz,
             grid_y,
             &regions,
-            |cp| world.chunk_exists(dim, cp),
+            |cp| {
+                world.chunk_exists(dim, cp)
+                    || compare_wb.is_some_and(|wb| {
+                        wb.chunk_exists(
+                            dim,
+                            ChunkPos::new(cp.cx() + cmp_off.0, cp.cz() + cmp_off.1),
+                        )
+                    })
+            },
             |cp| self.loaded_chunks_for_grid.contains(&(dim, cp)),
         );
         renderer.set_chunk_grid(device, Some(&grid));

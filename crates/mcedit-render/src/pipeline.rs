@@ -31,6 +31,7 @@ impl Lod0BatchKey {
 struct CameraUniform {
     view_proj: [[f32; 4]; 4],
     cam_pos: [f32; 4],
+    diff_params: [f32; 4],
     lod0_origin: [i32; 4],
     lod0_mask: [[[u32; 4]; 16]; 32],
 }
@@ -249,7 +250,14 @@ fn create_shared_quad_ibuf(device: &wgpu::Device, quad_capacity: usize) -> wgpu:
 fn mesh_y_bounds(data: &SectionMeshData) -> (f32, f32) {
     let mut min_y = f32::INFINITY;
     let mut max_y = f32::NEG_INFINITY;
-    for bucket in [&data.opaque, &data.alpha_cutout, &data.translucent] {
+    for bucket in [
+        &data.opaque,
+        &data.alpha_cutout,
+        &data.translucent,
+        &data.diff_red,
+        &data.diff_gray_a,
+        &data.diff_gray_b,
+    ] {
         for v in &bucket.vertices {
             if v.pos[1] < min_y {
                 min_y = v.pos[1];
@@ -259,7 +267,14 @@ fn mesh_y_bounds(data: &SectionMeshData) -> (f32, f32) {
             }
         }
     }
-    for quads in [&data.packed_opaque, &data.packed_cutout, &data.packed_translucent] {
+    for quads in [
+        &data.packed_opaque,
+        &data.packed_cutout,
+        &data.packed_translucent,
+        &data.packed_diff_red,
+        &data.packed_diff_gray_a,
+        &data.packed_diff_gray_b,
+    ] {
         for q in quads {
             let (qy0, qy1) = q.y_bounds();
             if qy0 < min_y {
@@ -286,14 +301,28 @@ fn mesh_xyz_bounds(
 ) -> (Vec3, Vec3) {
     let mut min_v = Vec3::splat(f32::INFINITY);
     let mut max_v = Vec3::splat(f32::NEG_INFINITY);
-    for bucket in [&data.opaque, &data.alpha_cutout, &data.translucent] {
+    for bucket in [
+        &data.opaque,
+        &data.alpha_cutout,
+        &data.translucent,
+        &data.diff_red,
+        &data.diff_gray_a,
+        &data.diff_gray_b,
+    ] {
         for v in &bucket.vertices {
             let p = Vec3::from_array(v.pos);
             min_v = min_v.min(p);
             max_v = max_v.max(p);
         }
     }
-    for quads in [&data.packed_opaque, &data.packed_cutout, &data.packed_translucent] {
+    for quads in [
+        &data.packed_opaque,
+        &data.packed_cutout,
+        &data.packed_translucent,
+        &data.packed_diff_red,
+        &data.packed_diff_gray_a,
+        &data.packed_diff_gray_b,
+    ] {
         for q in quads {
             let lx = (q.w0 & 0x3F) as f32;
             let lz = ((q.w0 >> 6) & 0x3F) as f32;
@@ -328,6 +357,12 @@ struct GpuSectionMesh {
     packed_opaque: Option<GpuPackedBucket>,
     packed_cutout: Option<GpuPackedBucket>,
     packed_translucent: Option<GpuPackedBucket>,
+    packed_diff_red: Option<GpuPackedBucket>,
+    packed_diff_gray_a: Option<GpuPackedBucket>,
+    packed_diff_gray_b: Option<GpuPackedBucket>,
+    diff_red: Option<GpuBucket>,
+    diff_gray_a: Option<GpuBucket>,
+    diff_gray_b: Option<GpuBucket>,
     total_bytes: usize,
 }
 
@@ -375,12 +410,42 @@ impl GpuSectionMesh {
             &data.packed_translucent,
             "section_packed_trans",
         );
+        let packed_diff_red = GpuPackedBucket::from_quads(
+            device,
+            packed_layout,
+            origin_xz,
+            &data.packed_diff_red,
+            "section_packed_diff_red",
+        );
+        let packed_diff_gray_a = GpuPackedBucket::from_quads(
+            device,
+            packed_layout,
+            origin_xz,
+            &data.packed_diff_gray_a,
+            "section_packed_diff_gray_a",
+        );
+        let packed_diff_gray_b = GpuPackedBucket::from_quads(
+            device,
+            packed_layout,
+            origin_xz,
+            &data.packed_diff_gray_b,
+            "section_packed_diff_gray_b",
+        );
+        let diff_red = GpuBucket::from_bucket(device, &data.diff_red, "section_diff_red");
+        let diff_gray_a = GpuBucket::from_bucket(device, &data.diff_gray_a, "section_diff_gray_a");
+        let diff_gray_b = GpuBucket::from_bucket(device, &data.diff_gray_b, "section_diff_gray_b");
         let total_bytes = opaque.as_ref().map_or(0, |b| b.bytes)
             + alpha_cutout.as_ref().map_or(0, |b| b.bytes)
             + translucent.as_ref().map_or(0, |b| b.bytes)
             + packed_opaque.as_ref().map_or(0, |b| b.bytes)
             + packed_cutout.as_ref().map_or(0, |b| b.bytes)
-            + packed_translucent.as_ref().map_or(0, |b| b.bytes);
+            + packed_translucent.as_ref().map_or(0, |b| b.bytes)
+            + packed_diff_red.as_ref().map_or(0, |b| b.bytes)
+            + packed_diff_gray_a.as_ref().map_or(0, |b| b.bytes)
+            + packed_diff_gray_b.as_ref().map_or(0, |b| b.bytes)
+            + diff_red.as_ref().map_or(0, |b| b.bytes)
+            + diff_gray_a.as_ref().map_or(0, |b| b.bytes)
+            + diff_gray_b.as_ref().map_or(0, |b| b.bytes);
 
         Self {
             aabb_min,
@@ -391,6 +456,12 @@ impl GpuSectionMesh {
             packed_opaque,
             packed_cutout,
             packed_translucent,
+            packed_diff_red,
+            packed_diff_gray_a,
+            packed_diff_gray_b,
+            diff_red,
+            diff_gray_a,
+            diff_gray_b,
             total_bytes,
         }
     }
@@ -410,10 +481,16 @@ impl GpuSectionMesh {
         let mut ov = 0usize;
         let mut cv = 0usize;
         let mut tv = 0usize;
+        let mut drv = 0usize;
+        let mut dgav = 0usize;
+        let mut dgbv = 0usize;
         for &sec in sections {
             ov += sec.opaque.vertices.len();
             cv += sec.alpha_cutout.vertices.len();
             tv += sec.translucent.vertices.len();
+            drv += sec.diff_red.vertices.len();
+            dgav += sec.diff_gray_a.vertices.len();
+            dgbv += sec.diff_gray_b.vertices.len();
             let (smin, smax) = mesh_xyz_bounds(sec, origin_xz[0], origin_xz[1], fb_min, fb_max);
             if !sec.is_empty() {
                 min_v = min_v.min(smin);
@@ -429,16 +506,28 @@ impl GpuSectionMesh {
         let mut merged_o = MeshBucket::default();
         let mut merged_c = MeshBucket::default();
         let mut merged_t = MeshBucket::default();
+        let mut merged_dr = MeshBucket::default();
+        let mut merged_dga = MeshBucket::default();
+        let mut merged_dgb = MeshBucket::default();
         merged_o.vertices.reserve(ov);
         merged_c.vertices.reserve(cv);
         merged_t.vertices.reserve(tv);
+        merged_dr.vertices.reserve(drv);
+        merged_dga.vertices.reserve(dgav);
+        merged_dgb.vertices.reserve(dgbv);
         let mut po_slices: Vec<&[PackedCubeQuad]> = Vec::with_capacity(sections.len());
         let mut pc_slices: Vec<&[PackedCubeQuad]> = Vec::with_capacity(sections.len());
         let mut pt_slices: Vec<&[PackedCubeQuad]> = Vec::with_capacity(sections.len());
+        let mut pdr_slices: Vec<&[PackedCubeQuad]> = Vec::new();
+        let mut pdga_slices: Vec<&[PackedCubeQuad]> = Vec::new();
+        let mut pdgb_slices: Vec<&[PackedCubeQuad]> = Vec::new();
         for &sec in sections {
             merged_o.append(&sec.opaque);
             merged_c.append(&sec.alpha_cutout);
             merged_t.append(&sec.translucent);
+            merged_dr.append(&sec.diff_red);
+            merged_dga.append(&sec.diff_gray_a);
+            merged_dgb.append(&sec.diff_gray_b);
             if !sec.packed_opaque.is_empty() {
                 po_slices.push(&sec.packed_opaque);
             }
@@ -448,11 +537,23 @@ impl GpuSectionMesh {
             if !sec.packed_translucent.is_empty() {
                 pt_slices.push(&sec.packed_translucent);
             }
+            if !sec.packed_diff_red.is_empty() {
+                pdr_slices.push(&sec.packed_diff_red);
+            }
+            if !sec.packed_diff_gray_a.is_empty() {
+                pdga_slices.push(&sec.packed_diff_gray_a);
+            }
+            if !sec.packed_diff_gray_b.is_empty() {
+                pdgb_slices.push(&sec.packed_diff_gray_b);
+            }
         }
 
         let opaque = GpuBucket::from_bucket(device, &merged_o, "batch4x4_opaque");
         let alpha_cutout = GpuBucket::from_bucket(device, &merged_c, "batch4x4_cutout");
         let translucent = GpuBucket::from_bucket(device, &merged_t, "batch4x4_trans");
+        let diff_red = GpuBucket::from_bucket(device, &merged_dr, "batch4x4_diff_red");
+        let diff_gray_a = GpuBucket::from_bucket(device, &merged_dga, "batch4x4_diff_gray_a");
+        let diff_gray_b = GpuBucket::from_bucket(device, &merged_dgb, "batch4x4_diff_gray_b");
         let packed_opaque = GpuPackedBucket::from_slices(
             device,
             packed_layout,
@@ -474,12 +575,39 @@ impl GpuSectionMesh {
             &pt_slices,
             "batch4x4_packed_trans",
         );
+        let packed_diff_red = GpuPackedBucket::from_slices(
+            device,
+            packed_layout,
+            origin_xz,
+            &pdr_slices,
+            "batch4x4_packed_diff_red",
+        );
+        let packed_diff_gray_a = GpuPackedBucket::from_slices(
+            device,
+            packed_layout,
+            origin_xz,
+            &pdga_slices,
+            "batch4x4_packed_diff_gray_a",
+        );
+        let packed_diff_gray_b = GpuPackedBucket::from_slices(
+            device,
+            packed_layout,
+            origin_xz,
+            &pdgb_slices,
+            "batch4x4_packed_diff_gray_b",
+        );
         let total_bytes = opaque.as_ref().map_or(0, |b| b.bytes)
             + alpha_cutout.as_ref().map_or(0, |b| b.bytes)
             + translucent.as_ref().map_or(0, |b| b.bytes)
             + packed_opaque.as_ref().map_or(0, |b| b.bytes)
             + packed_cutout.as_ref().map_or(0, |b| b.bytes)
-            + packed_translucent.as_ref().map_or(0, |b| b.bytes);
+            + packed_translucent.as_ref().map_or(0, |b| b.bytes)
+            + packed_diff_red.as_ref().map_or(0, |b| b.bytes)
+            + packed_diff_gray_a.as_ref().map_or(0, |b| b.bytes)
+            + packed_diff_gray_b.as_ref().map_or(0, |b| b.bytes)
+            + diff_red.as_ref().map_or(0, |b| b.bytes)
+            + diff_gray_a.as_ref().map_or(0, |b| b.bytes)
+            + diff_gray_b.as_ref().map_or(0, |b| b.bytes);
 
         Self {
             aabb_min,
@@ -490,6 +618,12 @@ impl GpuSectionMesh {
             packed_opaque,
             packed_cutout,
             packed_translucent,
+            packed_diff_red,
+            packed_diff_gray_a,
+            packed_diff_gray_b,
+            diff_red,
+            diff_gray_a,
+            diff_gray_b,
             total_bytes,
         }
     }
@@ -574,6 +708,15 @@ pub struct WorldRenderer {
     packed_opaque_pipeline: wgpu::RenderPipeline,
     packed_cutout_pipeline: wgpu::RenderPipeline,
     packed_translucent_pipeline: wgpu::RenderPipeline,
+    // Compare diff overlay pipelines
+    packed_depth_only_pipeline: wgpu::RenderPipeline,
+    depth_only_pipeline: wgpu::RenderPipeline,
+    packed_diff_red_pipeline: wgpu::RenderPipeline,
+    diff_red_pipeline: wgpu::RenderPipeline,
+    packed_diff_gray_a_pipeline: wgpu::RenderPipeline,
+    diff_gray_a_pipeline: wgpu::RenderPipeline,
+    packed_diff_gray_b_pipeline: wgpu::RenderPipeline,
+    diff_gray_b_pipeline: wgpu::RenderPipeline,
     lod_pipeline: wgpu::RenderPipeline,
     lod_translucent_pipeline: wgpu::RenderPipeline,
     translucent_pipeline: wgpu::RenderPipeline,
@@ -625,6 +768,7 @@ pub struct WorldRenderer {
 
     preview_mesh: Option<GpuSectionMesh>,
     pub preview_origin: Vec3,
+    pub diff_params: [f32; 4],
 }
 
 impl WorldRenderer {
@@ -821,6 +965,123 @@ impl WorldRenderer {
             Some(wgpu::BlendState::ALPHA_BLENDING),
             wgpu::DepthBiasState::default(),
         );
+        // Compare diff overlay pipelines
+        let packed_depth_only_pipeline = make_terrain_pipeline_ext(
+            device,
+            &packed_pipeline_layout,
+            &terrain_shader,
+            "vs_packed_quad",
+            "fs_packed_depth_only",
+            surface_format,
+            None,
+            true,
+            wgpu::CompareFunction::Less,
+            Some(wgpu::Face::Back),
+            None,
+            wgpu::ColorWrites::empty(),
+            wgpu::DepthBiasState::default(),
+        );
+        let depth_only_pipeline = make_terrain_pipeline_ext(
+            device,
+            &terrain_pipeline_layout,
+            &terrain_shader,
+            "vs_main",
+            "fs_depth_only",
+            surface_format,
+            Some(&terrain_vertex_layout),
+            true,
+            wgpu::CompareFunction::Less,
+            None,
+            None,
+            wgpu::ColorWrites::empty(),
+            wgpu::DepthBiasState::default(),
+        );
+        let packed_diff_red_pipeline = make_terrain_pipeline(
+            device,
+            &packed_pipeline_layout,
+            &terrain_shader,
+            "vs_packed_quad",
+            "fs_packed_diff_red",
+            surface_format,
+            None,
+            true,
+            Some(wgpu::Face::Back),
+            None,
+            wgpu::DepthBiasState::default(),
+        );
+        let diff_red_pipeline = make_terrain_pipeline(
+            device,
+            &terrain_pipeline_layout,
+            &terrain_shader,
+            "vs_main",
+            "fs_diff_red",
+            surface_format,
+            Some(&terrain_vertex_layout),
+            true,
+            None,
+            None,
+            wgpu::DepthBiasState::default(),
+        );
+        let packed_diff_gray_a_pipeline = make_terrain_pipeline_ext(
+            device,
+            &packed_pipeline_layout,
+            &terrain_shader,
+            "vs_packed_quad",
+            "fs_packed_diff_gray_a",
+            surface_format,
+            None,
+            false,
+            wgpu::CompareFunction::Equal,
+            Some(wgpu::Face::Back),
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+            wgpu::ColorWrites::ALL,
+            wgpu::DepthBiasState::default(),
+        );
+        let diff_gray_a_pipeline = make_terrain_pipeline_ext(
+            device,
+            &terrain_pipeline_layout,
+            &terrain_shader,
+            "vs_main",
+            "fs_diff_gray_a",
+            surface_format,
+            Some(&terrain_vertex_layout),
+            false,
+            wgpu::CompareFunction::Equal,
+            None,
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+            wgpu::ColorWrites::ALL,
+            wgpu::DepthBiasState::default(),
+        );
+        let packed_diff_gray_b_pipeline = make_terrain_pipeline_ext(
+            device,
+            &packed_pipeline_layout,
+            &terrain_shader,
+            "vs_packed_quad",
+            "fs_packed_diff_gray_b",
+            surface_format,
+            None,
+            false,
+            wgpu::CompareFunction::Equal,
+            Some(wgpu::Face::Back),
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+            wgpu::ColorWrites::ALL,
+            wgpu::DepthBiasState::default(),
+        );
+        let diff_gray_b_pipeline = make_terrain_pipeline_ext(
+            device,
+            &terrain_pipeline_layout,
+            &terrain_shader,
+            "vs_main",
+            "fs_diff_gray_b",
+            surface_format,
+            Some(&terrain_vertex_layout),
+            false,
+            wgpu::CompareFunction::Equal,
+            None,
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+            wgpu::ColorWrites::ALL,
+            wgpu::DepthBiasState::default(),
+        );
         let lod_pipeline = make_terrain_pipeline(
             device,
             &terrain_pipeline_layout,
@@ -1011,6 +1272,14 @@ impl WorldRenderer {
             packed_opaque_pipeline,
             packed_cutout_pipeline,
             packed_translucent_pipeline,
+            packed_depth_only_pipeline,
+            depth_only_pipeline,
+            packed_diff_red_pipeline,
+            diff_red_pipeline,
+            packed_diff_gray_a_pipeline,
+            diff_gray_a_pipeline,
+            packed_diff_gray_b_pipeline,
+            diff_gray_b_pipeline,
             lod_pipeline,
             lod_translucent_pipeline,
             translucent_pipeline,
@@ -1052,6 +1321,7 @@ impl WorldRenderer {
             grid_line_buf: None,
             preview_mesh: None,
             preview_origin: Vec3::ZERO,
+            diff_params: [0.55, 0.85, 0.62, 0.0],
         }
     }
 
@@ -1628,6 +1898,7 @@ impl WorldRenderer {
         let cam_u = CameraUniform {
             view_proj: vp.to_cols_array_2d(),
             cam_pos: [camera.pos.x, camera.pos.y, camera.pos.z, 1.0],
+            diff_params: self.diff_params,
             lod0_origin: self.cached_lod0_origin,
             lod0_mask: *self.cached_lod0_mask,
         };
@@ -1645,6 +1916,7 @@ impl WorldRenderer {
             let pu = CameraUniform {
                 view_proj: preview_vp.to_cols_array_2d(),
                 cam_pos: [camera.pos.x, camera.pos.y, camera.pos.z, 1.0],
+                diff_params: self.diff_params,
                 lod0_origin: [0; 4],
                 lod0_mask: [[[0; 4]; 16]; 32],
             };
@@ -1690,12 +1962,29 @@ impl WorldRenderer {
         // Ensure shared static quad index buffer is large enough for the biggest vertex or packed bucket
         let mut max_quads = 0usize;
         for s in self.lod0_batches.values().chain(self.pending_lod0.values()) {
-            for b in [&s.opaque, &s.alpha_cutout, &s.translucent].into_iter().flatten() {
+            for b in [
+                &s.opaque,
+                &s.alpha_cutout,
+                &s.translucent,
+                &s.diff_red,
+                &s.diff_gray_a,
+                &s.diff_gray_b,
+            ]
+            .into_iter()
+            .flatten()
+            {
                 max_quads = max_quads.max(b.quad_count);
             }
-            for b in [&s.packed_opaque, &s.packed_cutout, &s.packed_translucent]
-                .into_iter()
-                .flatten()
+            for b in [
+                &s.packed_opaque,
+                &s.packed_cutout,
+                &s.packed_translucent,
+                &s.packed_diff_red,
+                &s.packed_diff_gray_a,
+                &s.packed_diff_gray_b,
+            ]
+            .into_iter()
+            .flatten()
             {
                 max_quads = max_quads.max(b.quad_count);
             }
@@ -1768,18 +2057,34 @@ impl WorldRenderer {
             let mut calls = 0u64;
             let mut indices = 0u64;
             for (s, _, face_mask) in &visible_sections {
-                for b in [&s.opaque, &s.alpha_cutout, &s.translucent].into_iter().flatten() {
+                for b in [
+                    &s.opaque,
+                    &s.alpha_cutout,
+                    &s.translucent,
+                    &s.diff_red,
+                    &s.diff_gray_a,
+                    &s.diff_gray_b,
+                ]
+                .into_iter()
+                .flatten()
+                {
                     calls += 1;
                     indices += b.index_count as u64;
                 }
-                for b in [&s.packed_opaque, &s.packed_cutout, &s.packed_translucent]
-                    .into_iter()
-                    .flatten()
+                for b in [
+                    &s.packed_opaque,
+                    &s.packed_cutout,
+                    &s.packed_translucent,
+                    &s.packed_diff_red,
+                    &s.packed_diff_gray_a,
+                    &s.packed_diff_gray_b,
+                ]
+                .into_iter()
+                .flatten()
                 {
                     let mut vis_idx = 0u64;
-                    for f in 0..6 {
+                    for (f, &(st, en)) in b.face_ranges.iter().enumerate() {
                         if (face_mask & (1u8 << f)) != 0 {
-                            let (st, en) = b.face_ranges[f];
                             vis_idx += (en - st) as u64;
                         }
                     }
@@ -1867,6 +2172,26 @@ impl WorldRenderer {
                     }
                 }
 
+                // 2c. World Compare Mismatched Blocks (Semi-transparent Red tint over texture, depth-writing)
+                let has_diff_red = visible_sections
+                    .iter()
+                    .any(|(s, _, _)| s.packed_diff_red.is_some() || s.diff_red.is_some());
+                if has_diff_red {
+                    pass.set_pipeline(&self.packed_diff_red_pipeline);
+                    for (s, _, face_mask) in &visible_sections {
+                        if let Some(b) = &s.packed_diff_red {
+                            draw_packed_visible_faces(&mut pass, b, *face_mask);
+                        }
+                    }
+                    pass.set_pipeline(&self.diff_red_pipeline);
+                    for (s, _, _) in &visible_sections {
+                        if let Some(b) = &s.diff_red {
+                            pass.set_vertex_buffer(0, b.vbuf.slice(..));
+                            pass.draw_indexed(0..b.index_count, 0, 0..1);
+                        }
+                    }
+                }
+
                 // 3. Distant True-3D LOD 1/2 Opaque (LOD 0 chunks masked cleanly in fs_lod)
                 if !visible_lods.is_empty() {
                     pass.set_pipeline(&self.lod_pipeline);
@@ -1876,8 +2201,76 @@ impl WorldRenderer {
                             pass.draw_indexed(0..b.index_count, 0, 0..1);
                         }
                     }
+                }
 
-                    // 4. Distant True-3D LOD 1/2 Translucent (water, stained glass, ice)
+                // 3b. World Compare Only-in-A Blocks (2-pass depth prepass + light cool gray alpha blend)
+                let has_diff_gray_a = visible_sections
+                    .iter()
+                    .any(|(s, _, _)| s.packed_diff_gray_a.is_some() || s.diff_gray_a.is_some());
+                if has_diff_gray_a {
+                    pass.set_pipeline(&self.packed_depth_only_pipeline);
+                    for (s, _, face_mask) in &visible_sections {
+                        if let Some(b) = &s.packed_diff_gray_a {
+                            draw_packed_visible_faces(&mut pass, b, *face_mask);
+                        }
+                    }
+                    pass.set_pipeline(&self.depth_only_pipeline);
+                    for (s, _, _) in &visible_sections {
+                        if let Some(b) = &s.diff_gray_a {
+                            pass.set_vertex_buffer(0, b.vbuf.slice(..));
+                            pass.draw_indexed(0..b.index_count, 0, 0..1);
+                        }
+                    }
+                    pass.set_pipeline(&self.packed_diff_gray_a_pipeline);
+                    for (s, _, face_mask) in &visible_sections {
+                        if let Some(b) = &s.packed_diff_gray_a {
+                            draw_packed_visible_faces(&mut pass, b, *face_mask);
+                        }
+                    }
+                    pass.set_pipeline(&self.diff_gray_a_pipeline);
+                    for (s, _, _) in &visible_sections {
+                        if let Some(b) = &s.diff_gray_a {
+                            pass.set_vertex_buffer(0, b.vbuf.slice(..));
+                            pass.draw_indexed(0..b.index_count, 0, 0..1);
+                        }
+                    }
+                }
+
+                // 3c. World Compare Only-in-B Blocks (2-pass depth prepass + darker slate gray ghost blend)
+                let has_diff_gray_b = visible_sections
+                    .iter()
+                    .any(|(s, _, _)| s.packed_diff_gray_b.is_some() || s.diff_gray_b.is_some());
+                if has_diff_gray_b {
+                    pass.set_pipeline(&self.packed_depth_only_pipeline);
+                    for (s, _, face_mask) in &visible_sections {
+                        if let Some(b) = &s.packed_diff_gray_b {
+                            draw_packed_visible_faces(&mut pass, b, *face_mask);
+                        }
+                    }
+                    pass.set_pipeline(&self.depth_only_pipeline);
+                    for (s, _, _) in &visible_sections {
+                        if let Some(b) = &s.diff_gray_b {
+                            pass.set_vertex_buffer(0, b.vbuf.slice(..));
+                            pass.draw_indexed(0..b.index_count, 0, 0..1);
+                        }
+                    }
+                    pass.set_pipeline(&self.packed_diff_gray_b_pipeline);
+                    for (s, _, face_mask) in &visible_sections {
+                        if let Some(b) = &s.packed_diff_gray_b {
+                            draw_packed_visible_faces(&mut pass, b, *face_mask);
+                        }
+                    }
+                    pass.set_pipeline(&self.diff_gray_b_pipeline);
+                    for (s, _, _) in &visible_sections {
+                        if let Some(b) = &s.diff_gray_b {
+                            pass.set_vertex_buffer(0, b.vbuf.slice(..));
+                            pass.draw_indexed(0..b.index_count, 0, 0..1);
+                        }
+                    }
+                }
+
+                // 4. Distant True-3D LOD 1/2 Translucent (water, stained glass, ice, diff ghosts)
+                if !visible_lods.is_empty() {
                     pass.set_pipeline(&self.lod_translucent_pipeline);
                     for (r, _) in &visible_lods {
                         if let Some(b) = &r.translucent {
@@ -2208,6 +2601,39 @@ fn make_terrain_pipeline(
     blend: Option<wgpu::BlendState>,
     bias: wgpu::DepthBiasState,
 ) -> wgpu::RenderPipeline {
+    make_terrain_pipeline_ext(
+        device,
+        layout,
+        shader,
+        vs_entry,
+        fs_entry,
+        surface_format,
+        v_layout,
+        depth_write,
+        wgpu::CompareFunction::Less,
+        cull_mode,
+        blend,
+        wgpu::ColorWrites::ALL,
+        bias,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_terrain_pipeline_ext(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    vs_entry: &str,
+    fs_entry: &str,
+    surface_format: wgpu::TextureFormat,
+    v_layout: Option<&wgpu::VertexBufferLayout<'_>>,
+    depth_write: bool,
+    depth_compare: wgpu::CompareFunction,
+    cull_mode: Option<wgpu::Face>,
+    blend: Option<wgpu::BlendState>,
+    write_mask: wgpu::ColorWrites,
+    bias: wgpu::DepthBiasState,
+) -> wgpu::RenderPipeline {
     let buffers: [Option<wgpu::VertexBufferLayout<'_>>; 1] = [v_layout.cloned()];
     let buffer_slice: &[Option<wgpu::VertexBufferLayout<'_>>] = if v_layout.is_some() {
         &buffers
@@ -2229,7 +2655,7 @@ fn make_terrain_pipeline(
             targets: &[Some(wgpu::ColorTargetState {
                 format: surface_format,
                 blend,
-                write_mask: wgpu::ColorWrites::ALL,
+                write_mask,
             })],
             compilation_options: Default::default(),
         }),
@@ -2242,7 +2668,7 @@ fn make_terrain_pipeline(
         depth_stencil: Some(wgpu::DepthStencilState {
             format: wgpu::TextureFormat::Depth32Float,
             depth_write_enabled: Some(depth_write),
-            depth_compare: Some(wgpu::CompareFunction::Less),
+            depth_compare: Some(depth_compare),
             stencil: Default::default(),
             bias,
         }),

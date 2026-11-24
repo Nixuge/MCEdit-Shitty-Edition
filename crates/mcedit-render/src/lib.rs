@@ -1,5 +1,6 @@
 pub mod atlas;
 pub mod camera;
+pub mod compare_mesher;
 pub mod frustum;
 pub mod mesher;
 pub mod overlay;
@@ -11,6 +12,9 @@ pub use atlas::{
     TextureAtlas, should_tint_face,
 };
 pub use camera::{CameraController, CameraInputs, ViewMode};
+pub use compare_mesher::{
+    mesh_chunk_compare, mesh_lod_overhead_tile_compare, mesh_lod_voxel_tile_compare,
+};
 pub use frustum::Frustum;
 pub use mesher::{
     ChunkNeighborSnapshot, LodTileOccupancy, MeshBucket, MeshOptions, PackedCubeQuad,
@@ -293,5 +297,270 @@ mod tests {
         assert_eq!(atlas.rgba.height(), ATLAS_SIZE);
         let uv = TextureAtlas::tile_uv([0, 0]);
         assert!(uv[0] < uv[2] && uv[1] < uv[3]);
+    }
+
+    #[test]
+    fn compare_mesher_classifies_match_mismatch_and_one_sided() {
+        let reg = BlockRegistry::with_pre113_defaults();
+        let stone = reg.find_by_legacy(1, 0).unwrap();
+        let dirt = reg.find_by_legacy(3, 0).unwrap();
+        let cobble = reg.find_by_legacy(4, 0).unwrap();
+
+        let cp = ChunkPos::new(0, 0);
+        let mut chunk_a = Chunk::new(cp, 0, 15);
+        let mut chunk_b = Chunk::new(cp, 0, 15);
+
+        // (2, 10, 2): Match (stone == stone)
+        chunk_a.set_block(2, 10, 2, stone);
+        chunk_b.set_block(2, 10, 2, stone);
+        // (5, 10, 2): Mismatch (stone != dirt) -> Red
+        chunk_a.set_block(5, 10, 2, stone);
+        chunk_b.set_block(5, 10, 2, dirt);
+        // (8, 10, 2): Only in A (cobble vs air) -> Light Gray A
+        chunk_a.set_block(8, 10, 2, cobble);
+        // (11, 10, 2): Only in B (air vs dirt) -> Slate Gray B
+        chunk_b.set_block(11, 10, 2, dirt);
+
+        let snap_a = ChunkNeighborSnapshot {
+            center: std::sync::Arc::new(chunk_a),
+            east: None,
+            west: None,
+            south: None,
+            north: None,
+        };
+        let snap_b = ChunkNeighborSnapshot {
+            center: std::sync::Arc::new(chunk_b),
+            east: None,
+            west: None,
+            south: None,
+            north: None,
+        };
+
+        let mesh = mesh_chunk_compare(
+            cp,
+            Some(&snap_a),
+            Some(&snap_b),
+            &reg,
+            MeshOptions::default(),
+            mcedit_core::CompareConfig::default(),
+        );
+        assert_eq!(mesh.packed_opaque.len(), 6, "matching cube -> 6 packed_opaque faces");
+        assert_eq!(mesh.packed_diff_red.len(), 6, "mismatched cube -> 6 packed_diff_red faces");
+        assert_eq!(mesh.packed_diff_gray_a.len(), 6, "only-in-A cube -> 6 packed_diff_gray_a faces");
+        assert_eq!(mesh.packed_diff_gray_b.len(), 6, "only-in-B cube -> 6 packed_diff_gray_b faces");
+    }
+
+    #[test]
+    fn compare_mesher_ignore_properties_treats_rotated_stairs_as_match() {
+        let mut reg = BlockRegistry::with_pre113_defaults();
+        let stair_n = reg.intern(
+            mcedit_core::BlockState::new("minecraft:oak_stairs")
+                .with_prop("facing", "north")
+                .with_prop("half", "bottom"),
+        );
+        let stair_s = reg.intern(
+            mcedit_core::BlockState::new("minecraft:oak_stairs")
+                .with_prop("facing", "south")
+                .with_prop("half", "bottom"),
+        );
+
+        let cp = ChunkPos::new(0, 0);
+        let mut chunk_a = Chunk::new(cp, 0, 15);
+        let mut chunk_b = Chunk::new(cp, 0, 15);
+        chunk_a.set_block(4, 10, 4, stair_n);
+        chunk_b.set_block(4, 10, 4, stair_s);
+
+        let snap_a = ChunkNeighborSnapshot {
+            center: std::sync::Arc::new(chunk_a),
+            east: None,
+            west: None,
+            south: None,
+            north: None,
+        };
+        let snap_b = ChunkNeighborSnapshot {
+            center: std::sync::Arc::new(chunk_b),
+            east: None,
+            west: None,
+            south: None,
+            north: None,
+        };
+
+        // Strict mode: rotated stairs are flagged as Mismatch (diff_red)
+        let strict_cfg = mcedit_core::CompareConfig {
+            ignore_properties: false,
+            ..Default::default()
+        };
+        let strict_mesh = mesh_chunk_compare(
+            cp,
+            Some(&snap_a),
+            Some(&snap_b),
+            &reg,
+            MeshOptions::default(),
+            strict_cfg,
+        );
+        assert!(!strict_mesh.diff_red.is_empty(), "strict mode should flag rotated stairs red");
+        assert!(strict_mesh.opaque.is_empty() && strict_mesh.alpha_cutout.is_empty());
+
+        // Type-only mode: same base name -> Match (normal opaque/cutout)
+        let type_cfg = mcedit_core::CompareConfig {
+            ignore_properties: true,
+            ..Default::default()
+        };
+        let type_mesh = mesh_chunk_compare(
+            cp,
+            Some(&snap_a),
+            Some(&snap_b),
+            &reg,
+            MeshOptions::default(),
+            type_cfg,
+        );
+        assert!(type_mesh.diff_red.is_empty(), "ignore_properties should not flag rotated stairs");
+        assert!(
+            !type_mesh.opaque.is_empty() || !type_mesh.alpha_cutout.is_empty(),
+            "matching stairs must emit into normal geometry bucket"
+        );
+    }
+
+    #[test]
+    fn compare_mesher_hide_matching_exposes_buried_diff_faces() {
+        let reg = BlockRegistry::with_pre113_defaults();
+        let stone = reg.find_by_legacy(1, 0).unwrap();
+        let diamond_ore = reg.find_by_legacy(56, 0).unwrap();
+
+        let cp = ChunkPos::new(0, 0);
+        let mut chunk_a = Chunk::new(cp, 0, 15);
+        let mut chunk_b = Chunk::new(cp, 0, 15);
+        // 3x3x3 solid stone cube in both, with only the center buried block differing
+        for y in 9..=11 {
+            for z in 3..=5 {
+                for x in 3..=5 {
+                    chunk_a.set_block(x, y, z, stone);
+                    chunk_b.set_block(x, y, z, stone);
+                }
+            }
+        }
+        chunk_a.set_block(4, 10, 4, diamond_ore);
+
+        let snap_a = ChunkNeighborSnapshot {
+            center: std::sync::Arc::new(chunk_a),
+            east: None,
+            west: None,
+            south: None,
+            north: None,
+        };
+        let snap_b = ChunkNeighborSnapshot {
+            center: std::sync::Arc::new(chunk_b),
+            east: None,
+            west: None,
+            south: None,
+            north: None,
+        };
+
+        let cmp = mcedit_core::CompareConfig {
+            hide_matching: true,
+            ..Default::default()
+        };
+        let mesh = mesh_chunk_compare(
+            cp,
+            Some(&snap_a),
+            Some(&snap_b),
+            &reg,
+            MeshOptions::default(),
+            cmp,
+        );
+        assert!(mesh.packed_opaque.is_empty(), "matching blocks must be hidden");
+        assert_eq!(
+            mesh.packed_diff_red.len(),
+            6,
+            "buried mismatched block must expose all 6 faces when hide_matching is enabled"
+        );
+    }
+
+    #[test]
+    fn compare_lod_voxel_and_overhead_highlight_differences() {
+        let reg = BlockRegistry::with_pre113_defaults();
+        let atlas = TextureAtlas::default_atlas();
+        let palette = atlas.build_lod_colors(&reg);
+        let stone = reg.find_by_legacy(1, 0).unwrap();
+        let dirt = reg.find_by_legacy(3, 0).unwrap();
+
+        let cp = ChunkPos::new(0, 0);
+        let mut chunk_a = Chunk::new(cp, 0, 15);
+        let mut chunk_b = Chunk::new(cp, 0, 15);
+        // Mismatch column at (0..2, 60..62, 0..2), Only-A at (4..6), Only-B at (8..10)
+        for y in 60..62 {
+            for z in 0..2 {
+                for x in 0..2 {
+                    chunk_a.set_block(x, y, z, stone);
+                    chunk_b.set_block(x, y, z, dirt);
+                    chunk_a.set_block(x + 4, y, z, stone);
+                    chunk_b.set_block(x + 8, y, z, stone);
+                }
+            }
+        }
+
+        let vox_a = LodChunkVoxels::from_chunk_exact(&chunk_a, 2, &reg);
+        let vox_b = LodChunkVoxels::from_chunk_exact(&chunk_b, 2, &reg);
+        let cmp = mcedit_core::CompareConfig::default();
+
+        let (lod_mesh, occ) =
+            mesh_lod_voxel_tile_compare(0, 0, &[vox_a], &[vox_b], 2, &palette, 0, &reg, cmp);
+        // Mismatch goes to opaque with strong red tint (R > G + 40)
+        assert!(
+            lod_mesh
+                .opaque
+                .vertices
+                .iter()
+                .any(|v| v.color[0] > v.color[1].saturating_add(40)),
+            "LOD mismatch must emit red-tinted vertices"
+        );
+        // Both Only-A and Only-B (semi-transparent by default) go to translucent with distinct grays
+        assert!(
+            !lod_mesh.translucent.is_empty(),
+            "LOD one-sided blocks should emit translucent gray vertices"
+        );
+        assert!(occ.is_world_occupied(8, 60, 0), "LOD occupancy must include B-only voxels");
+
+        // 2D overhead diff map
+        let surf_a = mcedit_core::LodChunkSurface::from_chunk(&chunk_a, &reg);
+        let surf_b = mcedit_core::LodChunkSurface::from_chunk(&chunk_b, &reg);
+        let ov = mesh_lod_overhead_tile_compare(
+            0,
+            0,
+            &[surf_a],
+            &[surf_b],
+            1,
+            &palette,
+            0,
+            256,
+            &reg,
+            cmp,
+        );
+        assert!(
+            ov.opaque
+                .vertices
+                .iter()
+                .any(|v| v.color[0] > v.color[1].saturating_add(40)),
+            "2D overhead diff must highlight mismatched columns in red"
+        );
+    }
+
+    #[test]
+    fn wgsl_shaders_validate_with_wgpu_naga() {
+        for (name, src) in [
+            ("terrain.wgsl", include_str!("shaders/terrain.wgsl")),
+            ("overlay.wgsl", include_str!("shaders/overlay.wgsl")),
+            ("blur.wgsl", include_str!("shaders/blur.wgsl")),
+        ] {
+            let module = wgpu::naga::front::wgsl::parse_str(src)
+                .unwrap_or_else(|e| panic!("WGSL parse failed for {name}:\n{}", e.emit_to_string(src)));
+            let mut validator = wgpu::naga::valid::Validator::new(
+                wgpu::naga::valid::ValidationFlags::all(),
+                wgpu::naga::valid::Capabilities::all(),
+            );
+            validator
+                .validate(&module)
+                .unwrap_or_else(|e| panic!("WGSL validation failed for {name}:\n{}", e.emit_to_string(src)));
+        }
     }
 }

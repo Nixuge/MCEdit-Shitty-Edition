@@ -1,7 +1,7 @@
 use crate::config::{AppConfig, FileMenuEscapeBehavior, KeyAction, PanelBackgroundStyle};
 use crate::editor::EditorState;
 use crate::tools::{
-    ToolId, brush, chunk, clone, fill, filter, nbt_explorer, player, select, teleport,
+    ToolId, brush, chunk, clone, compare, fill, filter, nbt_explorer, player, select, teleport,
 };
 use crate::ui::create_world::CreateWorldDraft;
 use crate::ui::native_menu::{MenuCommand, NativeMenuBar};
@@ -14,7 +14,6 @@ use glam::{IVec3, Vec2};
 use mcedit_core::TransformOp;
 use mcedit_render::{
     CameraInputs, OverlayMeshBuilder, TextureAtlas, ViewMode, WorldRenderer,
-    raycast_world_with_lod,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -601,6 +600,10 @@ impl McEditApp {
                 self.editor.switch_tool(ToolId::Teleport);
                 true
             }
+            KeyCode::KeyC => {
+                self.editor.switch_tool(ToolId::Compare);
+                true
+            }
             KeyCode::Delete | KeyCode::Backspace => {
                 if self.editor.active_tool == ToolId::Select {
                     self.editor.delete_selected_blocks(&mut gpu.renderer);
@@ -846,35 +849,11 @@ impl McEditApp {
         if !egui_wants_ptr && !self.right_mouse_down {
             let (origin, dir) = self.editor.camera.screen_ray(self.cursor_pos, vp_size);
             self.editor.cursor_ray = Some((origin, dir));
-            if let Some(world) = &self.editor.world {
-                let dim = world.active_dim;
-                self.editor.hover_hit = raycast_world_with_lod(
-                    world,
-                    dim,
-                    Some(&self.editor.lod_raycast),
-                    origin,
-                    dir,
-                    max_ray_dist,
-                    self.editor.camera.mode,
-                );
-            } else {
-                self.editor.hover_hit = None;
-            }
+            self.editor.hover_hit = self.editor.raycast_cursor(origin, dir, max_ray_dist);
         } else if self.right_mouse_down {
             let (origin, dir) = (self.editor.camera.pos, self.editor.camera.forward_vec());
             self.editor.cursor_ray = Some((origin, dir));
-            if let Some(world) = &self.editor.world {
-                let dim = world.active_dim;
-                self.editor.hover_hit = raycast_world_with_lod(
-                    world,
-                    dim,
-                    Some(&self.editor.lod_raycast),
-                    origin,
-                    dir,
-                    max_ray_dist,
-                    self.editor.camera.mode,
-                );
-            }
+            self.editor.hover_hit = self.editor.raycast_cursor(origin, dir, max_ray_dist);
         } else {
             self.editor.cursor_ray = None;
         }
@@ -1000,6 +979,9 @@ impl McEditApp {
                                 ToolId::Spawn => player::draw_spawn_panel(ui, &mut self.editor),
                                 ToolId::Filter => filter::draw_panel(ui, &mut self.editor),
                                 ToolId::Teleport => teleport::draw_panel(ui, &mut self.editor),
+                                ToolId::Compare => {
+                                    compare::draw_panel(ui, &mut self.editor, &mut gpu.renderer);
+                                }
                             }
                         });
                     });
@@ -1023,6 +1005,14 @@ impl McEditApp {
                     .and_then(|p| p.file_name())
                     .and_then(|n| n.to_str())
                     .unwrap_or("world");
+                let drop_to_compare = self.editor.world.is_some()
+                    && self.editor.active_tool == ToolId::Compare
+                    && self.editor.should_show_left_panel();
+                let banner_text = if drop_to_compare {
+                    format!("Drop to compare (World B): {label}")
+                } else {
+                    format!("Drop to open: {label}")
+                };
                 egui::Area::new(egui::Id::unique("file_drop_overlay"))
                     .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                     .order(egui::Order::Foreground)
@@ -1032,13 +1022,17 @@ impl McEditApp {
                             .fill(egui::Color32::from_rgba_unmultiplied(18, 22, 30, 225))
                             .stroke(egui::Stroke::new(
                                 2.0,
-                                egui::Color32::from_rgb(90, 175, 255),
+                                if drop_to_compare {
+                                    egui::Color32::from_rgb(80, 185, 255)
+                                } else {
+                                    egui::Color32::from_rgb(90, 175, 255)
+                                },
                             ))
                             .corner_radius(8.0)
                             .inner_margin(egui::Margin::symmetric(28, 18))
                             .show(ui, |ui| {
                                 ui.label(
-                                    egui::RichText::new(format!("Drop to open: {label}"))
+                                    egui::RichText::new(banner_text)
                                         .size(20.0)
                                         .strong()
                                         .color(egui::Color32::WHITE),
@@ -1216,8 +1210,15 @@ impl ApplicationHandler<UserEvent> for McEditApp {
                         self.editor
                             .set_toast("Wait for current operation to finish before opening a world.");
                     } else if let Some(gpu) = &mut self.gpu {
-                        self.editor.open_world(&p, &mut gpu.renderer);
-                        self.sync_native_menu();
+                        let drop_to_compare = self.editor.world.is_some()
+                            && self.editor.active_tool == ToolId::Compare
+                            && self.editor.should_show_left_panel();
+                        if drop_to_compare {
+                            self.editor.open_compare_world(&p, &mut gpu.renderer);
+                        } else {
+                            self.editor.open_world(&p, &mut gpu.renderer);
+                            self.sync_native_menu();
+                        }
                     } else {
                         self.initial_world = Some(p);
                     }
@@ -1319,8 +1320,15 @@ impl ApplicationHandler<UserEvent> for McEditApp {
                     self.editor
                         .set_toast("Wait for current operation to finish before opening a world.");
                 } else if let Some(gpu) = &mut self.gpu {
-                    self.editor.open_world(&path, &mut gpu.renderer);
-                    self.sync_native_menu();
+                    let drop_to_compare = self.editor.world.is_some()
+                        && self.editor.active_tool == ToolId::Compare
+                        && self.editor.should_show_left_panel();
+                    if drop_to_compare {
+                        self.editor.open_compare_world(&path, &mut gpu.renderer);
+                    } else {
+                        self.editor.open_world(&path, &mut gpu.renderer);
+                        self.sync_native_menu();
+                    }
                 } else {
                     self.initial_world = Some(path);
                 }

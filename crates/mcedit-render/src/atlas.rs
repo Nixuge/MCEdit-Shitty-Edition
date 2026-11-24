@@ -45,6 +45,20 @@ impl LodColorTable {
             .copied()
             .unwrap_or_default()
     }
+
+    /// Resolves visual LOD properties for any `BlockStateId`, including dynamically interned
+    /// post-1.13 states whose `visual_base_id` points into the pre-built color table.
+    #[inline]
+    pub fn get_with_reg(&self, id: BlockStateId, reg: &BlockRegistry) -> LodBlockVisual {
+        if let Some(&v) = self.entries.get(id.0 as usize) {
+            return v;
+        }
+        let base = reg.get_meta(id).visual_base_id.unwrap_or(id);
+        self.entries
+            .get(base.0 as usize)
+            .copied()
+            .unwrap_or_default()
+    }
 }
 
 /// Returns true if `meta.tint` should be multiplied onto `face` (avoids tinting

@@ -260,6 +260,103 @@ impl LodChunkVoxels {
         }
         out
     }
+
+    /// Like `from_chunk`, but preserves the exact interned `BlockStateId` (without collapsing to
+    /// `visual_base_id`) so LOD terrain comparison distinguishes modern block variants accurately.
+    pub fn from_chunk_exact(chunk: &Chunk, step: u8, reg: &BlockRegistry) -> Self {
+        let step = if step <= 2 { 2u8 } else { 4u8 };
+        let s = step as usize;
+        let min_y = chunk.min_y();
+        let max_y = chunk.max_y();
+        let mut out = Self::new_empty(chunk.pos, step, min_y, max_y);
+        let sub_y_per_sec = 16 / s;
+        let hide_barriers = crate::hide_barriers();
+
+        for (&sy, sec) in &chunk.sections {
+            if sec.is_all_air() {
+                continue;
+            }
+            let base_wy = sy * 16;
+            if base_wy < min_y || base_wy >= max_y {
+                continue;
+            }
+            let base_cy = ((base_wy - min_y) as usize) / s;
+            for lcy in 0..sub_y_per_sec {
+                let cy = base_cy + lcy;
+                let y0 = lcy * s;
+                let y1 = y0 + s;
+                for cz in 0..out.xz_cells {
+                    let z0 = cz * s;
+                    let z1 = z0 + s;
+                    for cx in 0..out.xz_cells {
+                        let x0 = cx * s;
+                        let x1 = x0 + s;
+                        let mut best_opaque = BlockStateId::AIR;
+                        let mut best_opaque_y = 0usize;
+                        let mut best_non_opaque = BlockStateId::AIR;
+                        let mut best_non_opaque_prio = 0u8;
+                        let mut best_non_opaque_y = 0usize;
+                        for ly in (y0..y1).rev() {
+                            let y_off = ly << 8;
+                            for lz in z0..z1 {
+                                let yz_off = y_off | (lz << 4);
+                                for lx in x0..x1 {
+                                    let pidx = sec.indices[yz_off | lx] as usize;
+                                    if pidx == 0 {
+                                        continue;
+                                    }
+                                    let b = sec
+                                        .palette
+                                        .get(pidx)
+                                        .copied()
+                                        .unwrap_or(BlockStateId::AIR);
+                                    if b == BlockStateId::AIR {
+                                        continue;
+                                    }
+                                    let meta = reg.get_meta(b);
+                                    if meta.is_air || (hide_barriers && meta.is_barrier) {
+                                        continue;
+                                    }
+                                    if meta.is_full_opaque_cube {
+                                        if best_opaque == BlockStateId::AIR {
+                                            best_opaque = b;
+                                            best_opaque_y = ly;
+                                        }
+                                    } else {
+                                        let prio = lod_non_opaque_priority(meta);
+                                        if prio > best_non_opaque_prio
+                                            || (prio == best_non_opaque_prio
+                                                && ly > best_non_opaque_y)
+                                        {
+                                            best_non_opaque = b;
+                                            best_non_opaque_prio = prio;
+                                            best_non_opaque_y = ly;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        let chosen = if best_opaque != BlockStateId::AIR {
+                            if best_non_opaque != BlockStateId::AIR
+                                && best_non_opaque_prio >= 4
+                                && best_non_opaque_y > best_opaque_y
+                            {
+                                best_non_opaque
+                            } else {
+                                best_opaque
+                            }
+                        } else {
+                            best_non_opaque
+                        };
+                        if chosen != BlockStateId::AIR {
+                            out.set_cell(cx, cy, cz, chosen);
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
 }
 
 #[inline]
@@ -328,6 +425,18 @@ pub trait WorldFormat: Send + Sync {
     ) -> FormatResult<Option<Chunk>> {
         let mut tmp_reg = registry.clone();
         self.load_chunk(dim, pos, &mut tmp_reg)
+    }
+    /// Loads a chunk for read-only inspection/comparison while registering any unseen
+    /// block states into the shared `BlockRegistry` (fast read-lock path, write-lock only
+    /// on first encounter of a new state). Guarantees exact `BlockStateId` equality across worlds.
+    fn load_chunk_with_registry(
+        &self,
+        dim: DimensionId,
+        pos: ChunkPos,
+        registry: &parking_lot::RwLock<BlockRegistry>,
+    ) -> FormatResult<Option<Chunk>> {
+        let reg = registry.read();
+        self.load_chunk_readonly(dim, pos, &reg)
     }
     fn load_chunk_lod_surface(
         &self,

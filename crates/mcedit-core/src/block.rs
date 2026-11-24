@@ -786,6 +786,18 @@ impl BlockRegistry {
     /// already interned, or falls back to the base block name's default `BlockStateId`
     /// (or pattern-matched family visual base for newer 1.13-26.x blocks).
     #[inline]
+    pub fn find_exact(&self, state: &BlockState) -> Option<BlockStateId> {
+        if let Some(&id) = self.by_state.get(state) {
+            return Some(id);
+        }
+        if state.properties.is_empty()
+            && let Some(&id) = self.default_by_name.get(&state.name)
+        {
+            return Some(id);
+        }
+        None
+    }
+
     pub fn resolve_readonly(&self, state: &BlockState) -> Option<BlockStateId> {
         self.by_state
             .get(state)

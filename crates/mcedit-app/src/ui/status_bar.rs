@@ -15,6 +15,42 @@ pub fn draw(ui: &mut Ui, editor: &EditorState, renderer: &WorldRenderer, fps: f3
                 if let Some(hit) = editor.hover_hit {
                     let bp = hit.block_pos;
                     ui.label(format!("Cursor: ({}, {}, {})", bp.x, bp.y, bp.z));
+                    if editor.compare.is_active()
+                        && let Some((kind, id_a, id_b)) = editor.inspect_compare_block(bp)
+                        && kind != mcedit_core::DiffKind::Match
+                    {
+                        ui.separator();
+                        let reg = editor.registry.read();
+                        let short = |id: mcedit_core::BlockStateId| -> String {
+                            if id == mcedit_core::BlockStateId::AIR {
+                                "air".to_string()
+                            } else {
+                                let s = &reg.get_state(id).name;
+                                s.strip_prefix("minecraft:").unwrap_or(s).to_string()
+                            }
+                        };
+                        match kind {
+                            mcedit_core::DiffKind::Mismatch => {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(255, 110, 110),
+                                    format!("Diff: {} != {}", short(id_a), short(id_b)),
+                                );
+                            }
+                            mcedit_core::DiffKind::OnlyInA => {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(100, 200, 255),
+                                    format!("Only A: {}", short(id_a)),
+                                );
+                            }
+                            mcedit_core::DiffKind::OnlyInB => {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(95, 145, 255),
+                                    format!("Only B: {}", short(id_b)),
+                                );
+                            }
+                            mcedit_core::DiffKind::Match => {}
+                        }
+                    }
                 } else {
                     ui.label("Cursor: -");
                 }

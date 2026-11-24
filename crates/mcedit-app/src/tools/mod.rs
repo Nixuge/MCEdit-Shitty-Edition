@@ -1,6 +1,7 @@
 pub mod brush;
 pub mod chunk;
 pub mod clone;
+pub mod compare;
 pub mod fill;
 pub mod filter;
 pub mod nbt_explorer;
@@ -21,10 +22,11 @@ pub enum ToolId {
     Chunk,
     NbtExplorer,
     Teleport,
+    Compare,
 }
 
 impl ToolId {
-    pub const ALL: [ToolId; 11] = [
+    pub const ALL: [ToolId; 12] = [
         ToolId::Select,
         ToolId::Brush,
         ToolId::Clone,
@@ -36,6 +38,7 @@ impl ToolId {
         ToolId::Chunk,
         ToolId::NbtExplorer,
         ToolId::Teleport,
+        ToolId::Compare,
     ];
 
     pub fn name(self) -> &'static str {
@@ -51,6 +54,7 @@ impl ToolId {
             ToolId::Chunk => "Chunk",
             ToolId::NbtExplorer => "NBT",
             ToolId::Teleport => "Teleport",
+            ToolId::Compare => "Compare",
         }
     }
 
@@ -67,6 +71,7 @@ impl ToolId {
             ToolId::Chunk => "9",
             ToolId::NbtExplorer => "0",
             ToolId::Teleport => "T",
+            ToolId::Compare => "C",
         }
     }
 }
