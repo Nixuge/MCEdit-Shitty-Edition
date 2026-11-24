@@ -681,6 +681,9 @@ impl McEditApp {
                     self.editor.selection.clear();
                     self.editor.left_panel_open = false;
                 } else if self.editor.active_tool != ToolId::Select {
+                    if self.editor.active_tool == ToolId::Compare {
+                        self.editor.close_compare_world(&mut gpu.renderer);
+                    }
                     self.editor.active_tool = ToolId::Select;
                     self.editor.left_panel_open = false;
                     self.editor.preview_dirty = true;
