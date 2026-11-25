@@ -27,6 +27,8 @@ pub enum KeyAction {
     FlipX,
     MirrorZ,
     ToggleBarriers,
+    PrevWorldInFolder,
+    NextWorldInFolder,
 }
 
 impl KeyAction {
@@ -53,6 +55,8 @@ impl KeyAction {
             KeyAction::FlipX => "Flip Vertical / X",
             KeyAction::MirrorZ => "Mirror Z",
             KeyAction::ToggleBarriers => "Show / Hide Barrier Blocks",
+            KeyAction::PrevWorldInFolder => "Previous World in Folder",
+            KeyAction::NextWorldInFolder => "Next World in Folder",
         }
     }
 }
@@ -186,6 +190,8 @@ impl Default for AppConfig {
         keybinds.insert(KeyAction::FlipX, "F".into());
         keybinds.insert(KeyAction::MirrorZ, "G".into());
         keybinds.insert(KeyAction::ToggleBarriers, "B".into());
+        keybinds.insert(KeyAction::PrevWorldInFolder, ",".into());
+        keybinds.insert(KeyAction::NextWorldInFolder, ".".into());
 
         Self {
             view_distance: 64,

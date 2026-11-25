@@ -89,15 +89,48 @@ pub fn draw(ui: &mut Ui, editor: &mut EditorState, renderer: &mut WorldRenderer)
             }
 
             if let Some(w) = &editor.world {
-                let title = format_world_title(&w.metadata.level_name, w.format.root_path());
-                let full_path = w.format.root_path().display().to_string();
+                let title = format_world_title_with_folder(
+                    &w.metadata.level_name,
+                    w.format.root_path(),
+                    editor.folder_world_nav.as_ref(),
+                );
+                let mut hover = w.format.root_path().display().to_string();
+                if editor.folder_world_nav.is_some() {
+                    let prev_key = editor
+                        .config
+                        .keybinds
+                        .get(&crate::config::KeyAction::PrevWorldInFolder)
+                        .map(|s| s.as_str())
+                        .unwrap_or(",");
+                    let next_key = editor
+                        .config
+                        .keybinds
+                        .get(&crate::config::KeyAction::NextWorldInFolder)
+                        .map(|s| s.as_str())
+                        .unwrap_or(".");
+                    hover.push_str(&format!(
+                        "\nSwitch worlds in folder: {prev_key} (prev) / {next_key} (next)"
+                    ));
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add(egui::Label::new(egui::RichText::new(title).strong()).truncate())
-                        .on_hover_text(full_path);
+                        .on_hover_text(hover);
                 });
             }
         });
     });
+}
+
+fn format_world_title_with_folder(
+    level_name: &str,
+    root_path: &std::path::Path,
+    folder_nav: Option<&crate::editor::FolderWorldNav>,
+) -> String {
+    let base = format_world_title(level_name, root_path);
+    match folder_nav {
+        Some(nav) => format!("{}{base}", nav.display_prefix()),
+        None => base,
+    }
 }
 
 fn format_world_title(level_name: &str, root_path: &std::path::Path) -> String {
@@ -363,5 +396,33 @@ mod tests {
             format_world_title("", Path::new("/saves/my_map")),
             "my_map"
         );
+        let nav = crate::editor::FolderWorldNav {
+            folder_name: "Backups".to_string(),
+            worlds: vec![
+                std::path::PathBuf::from("/Backups/w1"),
+                std::path::PathBuf::from("/Backups/survival_v2"),
+                std::path::PathBuf::from("/Backups/w3"),
+            ],
+            current_index: 1,
+        };
+        assert_eq!(
+            format_world_title_with_folder(
+                "Survival World",
+                Path::new("/Backups/survival_v2"),
+                Some(&nav),
+            ),
+            "Backups [2/3] Survival World (survival_v2)"
+        );
+        assert_eq!(
+            format_world_title_with_folder(
+                "survival_v2",
+                Path::new("/Backups/survival_v2"),
+                Some(&nav),
+            ),
+            "Backups [2/3] survival_v2"
+        );
+        assert_eq!(nav.stepped_index(1), Some(2));
+        assert_eq!(nav.stepped_index(-2), Some(2));
+        assert_eq!(nav.stepped_index(2), Some(0));
     }
 }

@@ -271,6 +271,13 @@ pub fn draw(ui: &mut Ui, editor: &mut EditorState, renderer: &mut WorldRenderer)
                         }
                     });
 
+                    let folder_worlds: Vec<PathBuf> = entries
+                        .iter()
+                        .filter(|e| e.is_world)
+                        .map(|e| e.path.clone())
+                        .collect();
+                    let browser_dir = editor.browser_dir.clone();
+
                     egui::ScrollArea::vertical()
                         .id_salt("welcome_folder_browser")
                         .max_height(browser_list_h)
@@ -282,9 +289,12 @@ pub fn draw(ui: &mut Ui, editor: &mut EditorState, renderer: &mut WorldRenderer)
                                         .color(egui::Color32::GRAY),
                                 );
                             }
+                            let mut world_idx = 0usize;
                             for entry in entries {
                                 ui.horizontal(|ui| {
                                     if entry.is_world {
+                                        let idx = world_idx;
+                                        world_idx += 1;
                                         if ui
                                             .button(
                                                 egui::RichText::new(format!(
@@ -295,7 +305,12 @@ pub fn draw(ui: &mut Ui, editor: &mut EditorState, renderer: &mut WorldRenderer)
                                             )
                                             .clicked()
                                         {
-                                            editor.open_world(&entry.path, renderer);
+                                            editor.open_world_from_folder(
+                                                &browser_dir,
+                                                folder_worlds.clone(),
+                                                idx,
+                                                renderer,
+                                            );
                                         }
                                         if ui
                                             .small_button("->")

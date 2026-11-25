@@ -56,6 +56,33 @@ pub struct BrowserEntry {
     pub is_world: bool,
 }
 
+/// Active folder-browsing playlist when the current world was opened from a folder.
+#[derive(Debug, Clone)]
+pub struct FolderWorldNav {
+    pub folder_name: String,
+    pub worlds: Vec<PathBuf>,
+    pub current_index: usize,
+}
+
+impl FolderWorldNav {
+    pub fn display_prefix(&self) -> String {
+        format!(
+            "({}/{})  {}/",
+            self.current_index + 1,
+            self.worlds.len(),
+            self.folder_name
+        )
+    }
+
+    pub fn stepped_index(&self, delta: isize) -> Option<usize> {
+        let len = self.worlds.len();
+        if len <= 1 {
+            return None;
+        }
+        Some((self.current_index as isize + delta).rem_euclid(len as isize) as usize)
+    }
+}
+
 pub struct AnalysisModal {
     pub result: AnalysisResult,
     pub box_: BoundingBox,
@@ -179,6 +206,8 @@ pub struct EditorState {
     pub browser_dir: PathBuf,
     pub browser_entries: Vec<BrowserEntry>,
     pub browser_dirty: bool,
+    /// Present when the open world was opened from a folder, enabling quick prev/next switching.
+    pub folder_world_nav: Option<FolderWorldNav>,
 
     // Lazy cache of 1.17+ separate `entities/r.<x>.<z>.mca` entity lists for nearby chunks
     separate_entities_cache: AHashMap<(DimensionId, ChunkPos), Vec<mcedit_nbt::NbtCompound>>,
@@ -282,6 +311,7 @@ impl EditorState {
             browser_dir,
             browser_entries: Vec::new(),
             browser_dirty: true,
+            folder_world_nav: None,
             separate_entities_cache: AHashMap::new(),
         }
     }
@@ -531,6 +561,66 @@ impl EditorState {
     }
 
     pub fn open_world(&mut self, path: &Path, renderer: &mut WorldRenderer) {
+        self.folder_world_nav = None;
+        self.open_world_internal(path, renderer);
+    }
+
+    /// Opens a world that was selected from a browsed folder, enabling quick cycling across
+    /// all worlds in that folder via `PrevWorldInFolder` / `NextWorldInFolder` keybinds.
+    pub fn open_world_from_folder(
+        &mut self,
+        folder: &Path,
+        worlds: Vec<PathBuf>,
+        index: usize,
+        renderer: &mut WorldRenderer,
+    ) {
+        let Some(target) = worlds.get(index).cloned() else {
+            return;
+        };
+        let folder_name = folder
+            .file_name()
+            .map(|s| s.to_string_lossy().trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| folder.display().to_string());
+        if self.open_world_internal(&target, renderer) {
+            self.folder_world_nav = Some(FolderWorldNav {
+                folder_name,
+                worlds,
+                current_index: index,
+            });
+        }
+    }
+
+    /// Cycles to the previous (`delta = -1`) or next (`delta = 1`) world in the active folder.
+    pub fn step_folder_world(&mut self, delta: isize, renderer: &mut WorldRenderer) {
+        let Some(nav) = self.folder_world_nav.clone() else {
+            return;
+        };
+        let Some(next_idx) = nav.stepped_index(delta) else {
+            self.set_toast(format!("Only 1 world in folder '{}'", nav.folder_name));
+            return;
+        };
+        let target = nav.worlds[next_idx].clone();
+        if self.open_world_internal(&target, renderer) {
+            let label = target
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| target.display().to_string());
+            self.folder_world_nav = Some(FolderWorldNav {
+                current_index: next_idx,
+                ..nav
+            });
+            self.set_toast(format!(
+                "[{}/{}] {label}",
+                next_idx + 1,
+                self.folder_world_nav
+                    .as_ref()
+                    .map_or(0, |n| n.worlds.len())
+            ));
+        }
+    }
+
+    fn open_world_internal(&mut self, path: &Path, renderer: &mut WorldRenderer) -> bool {
         let open_res = {
             let reg = self.registry.read();
             FormatRegistry::open_world(path, &reg)
@@ -551,13 +641,16 @@ impl EditorState {
                         self.browser_dirty = true;
                     }
                     self.install_world(world, Some(path.to_path_buf()), renderer);
+                    true
                 }
                 Err(e) => {
                     self.handle_invalid_world(path, format!("Failed to load world: {e}"), renderer);
+                    false
                 }
             },
             Err(e) => {
                 self.handle_invalid_world(path, format!("Unsupported world: {e}"), renderer);
+                false
             }
         }
     }
@@ -653,6 +746,7 @@ impl EditorState {
 
     pub fn close_world(&mut self, renderer: &mut WorldRenderer) {
         self.world = None;
+        self.folder_world_nav = None;
         self.compare.world_b = None;
         self.compare.last_error = None;
         self.selection = SelectionState::default();

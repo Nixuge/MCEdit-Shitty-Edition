@@ -540,6 +540,34 @@ impl McEditApp {
             }
         }
 
+        if self.editor.world.is_some()
+            && !self.editor.jobs.is_busy()
+            && self.editor.folder_world_nav.is_some()
+        {
+            let prev_bind = self
+                .editor
+                .config
+                .keybinds
+                .get(&KeyAction::PrevWorldInFolder)
+                .map(|s| s.as_str())
+                .unwrap_or(",");
+            if matches_keybind(prev_bind, code, self.modifiers) {
+                self.editor.step_folder_world(-1, &mut gpu.renderer);
+                return true;
+            }
+            let next_bind = self
+                .editor
+                .config
+                .keybinds
+                .get(&KeyAction::NextWorldInFolder)
+                .map(|s| s.as_str())
+                .unwrap_or(".");
+            if matches_keybind(next_bind, code, self.modifiers) {
+                self.editor.step_folder_world(1, &mut gpu.renderer);
+                return true;
+            }
+        }
+
         match code {
             KeyCode::F3 => {
                 self.editor.show_profiler_overlay = !self.editor.show_profiler_overlay;
@@ -1836,7 +1864,33 @@ fn parse_keycode(s: &str) -> Option<KeyCode> {
         "F8" => Some(KeyCode::F8),
         "F9" => Some(KeyCode::F9),
         "F10" => Some(KeyCode::F10),
+        "F11" => Some(KeyCode::F11),
         "F12" => Some(KeyCode::F12),
+        "," | "COMMA" => Some(KeyCode::Comma),
+        "." | "PERIOD" => Some(KeyCode::Period),
+        "/" | "SLASH" => Some(KeyCode::Slash),
+        ";" | "SEMICOLON" => Some(KeyCode::Semicolon),
+        "'" | "QUOTE" => Some(KeyCode::Quote),
+        "[" | "BRACKETLEFT" => Some(KeyCode::BracketLeft),
+        "]" | "BRACKETRIGHT" => Some(KeyCode::BracketRight),
+        "-" | "MINUS" => Some(KeyCode::Minus),
+        "=" | "EQUAL" => Some(KeyCode::Equal),
+        "PAGEUP" | "PGUP" => Some(KeyCode::PageUp),
+        "PAGEDOWN" | "PGDN" => Some(KeyCode::PageDown),
+        "LEFT" | "ARROWLEFT" => Some(KeyCode::ArrowLeft),
+        "RIGHT" | "ARROWRIGHT" => Some(KeyCode::ArrowRight),
+        "UP" | "ARROWUP" => Some(KeyCode::ArrowUp),
+        "DOWN" | "ARROWDOWN" => Some(KeyCode::ArrowDown),
+        "0" => Some(KeyCode::Digit0),
+        "1" => Some(KeyCode::Digit1),
+        "2" => Some(KeyCode::Digit2),
+        "3" => Some(KeyCode::Digit3),
+        "4" => Some(KeyCode::Digit4),
+        "5" => Some(KeyCode::Digit5),
+        "6" => Some(KeyCode::Digit6),
+        "7" => Some(KeyCode::Digit7),
+        "8" => Some(KeyCode::Digit8),
+        "9" => Some(KeyCode::Digit9),
         _ => None,
     }
 }
