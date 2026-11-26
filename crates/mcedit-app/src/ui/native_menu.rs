@@ -28,6 +28,7 @@ pub enum MenuCommand {
     ToggleSignText,
     ToggleSignCommands,
     ToggleEntityLabels,
+    ToggleBlockHud,
     ToggleChunkBorders,
     ToggleFloorGrid,
     LoadResourcePack,
@@ -64,6 +65,7 @@ impl MenuCommand {
             "view.sign_text" => Some(Self::ToggleSignText),
             "view.sign_commands" => Some(Self::ToggleSignCommands),
             "view.entity_labels" => Some(Self::ToggleEntityLabels),
+            "view.block_hud" => Some(Self::ToggleBlockHud),
             "view.chunk_borders" => Some(Self::ToggleChunkBorders),
             "view.floor_grid" => Some(Self::ToggleFloorGrid),
             "view.load_resource_pack" => Some(Self::LoadResourcePack),
@@ -98,6 +100,7 @@ pub struct NativeMenuBar {
     sign_text_item: CheckMenuItem,
     sign_commands_item: CheckMenuItem,
     entity_labels_item: CheckMenuItem,
+    block_hud_item: CheckMenuItem,
     chunk_borders_item: CheckMenuItem,
     floor_grid_item: CheckMenuItem,
     reset_textures_item: MenuItem,
@@ -288,6 +291,13 @@ impl NativeMenuBar {
             config.show_entity_labels,
             None,
         );
+        let block_hud_item = CheckMenuItem::with_id(
+            "view.block_hud",
+            "Show Looked-At Block HUD (WAILA)",
+            true,
+            config.show_block_hud,
+            None,
+        );
         let chunk_borders_item = CheckMenuItem::with_id(
             "view.chunk_borders",
             "Show Chunk Borders",
@@ -339,6 +349,7 @@ impl NativeMenuBar {
                 &sign_text_item,
                 &sign_commands_item,
                 &entity_labels_item,
+                &block_hud_item,
                 &chunk_borders_item,
                 &floor_grid_item,
                 &PredefinedMenuItem::separator(),
@@ -389,6 +400,7 @@ impl NativeMenuBar {
             sign_text_item,
             sign_commands_item,
             entity_labels_item,
+            block_hud_item,
             chunk_borders_item,
             floor_grid_item,
             reset_textures_item,
@@ -438,6 +450,7 @@ impl NativeMenuBar {
         self.sign_text_item.set_checked(config.show_sign_text);
         self.sign_commands_item.set_checked(config.show_sign_commands);
         self.entity_labels_item.set_checked(config.show_entity_labels);
+        self.block_hud_item.set_checked(config.show_block_hud);
         self.chunk_borders_item.set_checked(config.show_chunk_borders);
         self.floor_grid_item.set_checked(config.show_floor_grid);
         self.reset_textures_item

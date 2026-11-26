@@ -56,6 +56,7 @@ struct MenuSyncState {
     show_sign_text: bool,
     show_sign_commands: bool,
     show_entity_labels: bool,
+    show_block_hud: bool,
     show_chunk_borders: bool,
     show_floor_grid: bool,
     has_resource_pack: bool,
@@ -315,6 +316,7 @@ impl McEditApp {
             show_sign_text: self.editor.config.show_sign_text,
             show_sign_commands: self.editor.config.show_sign_commands,
             show_entity_labels: self.editor.config.show_entity_labels,
+            show_block_hud: self.editor.config.show_block_hud,
             show_chunk_borders: self.editor.config.show_chunk_borders,
             show_floor_grid: self.editor.config.show_floor_grid,
             has_resource_pack: self.editor.config.resource_pack_path.is_some(),
@@ -443,6 +445,10 @@ impl McEditApp {
             }
             MenuCommand::ToggleEntityLabels => {
                 self.editor.config.show_entity_labels = !self.editor.config.show_entity_labels;
+                self.editor.config.save();
+            }
+            MenuCommand::ToggleBlockHud => {
+                self.editor.config.show_block_hud = !self.editor.config.show_block_hud;
                 self.editor.config.save();
             }
             MenuCommand::ToggleChunkBorders => {
@@ -1049,6 +1055,9 @@ impl McEditApp {
                     });
                 left_panel_rect = Some(panel_resp.response.rect);
             }
+
+            let viewport_rect = ui.available_rect_before_wrap();
+            crate::ui::waila_hud::draw(&ctx, &self.editor, viewport_rect, atlas_tex_id);
 
             block_picker::draw(&ctx, &mut self.editor, Some(atlas_tex_id));
             world_info::draw(&ctx, &mut self.editor, &mut gpu.renderer);

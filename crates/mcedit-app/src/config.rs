@@ -137,16 +137,18 @@ pub struct AppConfig {
     pub fast_leaves: bool,
     pub rough_graphics: bool,
     pub show_hidden_ores: bool,
-    #[serde(default = "default_show_barriers")]
+    #[serde(default = "default_true")]
     pub show_barriers: bool,
     pub show_entities: bool,
     pub show_block_entities: bool,
-    #[serde(default = "default_show_barriers")]
+    #[serde(default = "default_true")]
     pub show_sign_text: bool,
-    #[serde(default = "default_show_barriers")]
+    #[serde(default = "default_true")]
     pub show_sign_commands: bool,
-    #[serde(default = "default_show_barriers")]
+    #[serde(default = "default_true")]
     pub show_entity_labels: bool,
+    #[serde(default = "default_true")]
+    pub show_block_hud: bool,
     pub show_chunk_borders: bool,
     pub show_terrain_populated: bool,
     pub show_ceiling: bool,
@@ -211,6 +213,7 @@ impl Default for AppConfig {
             show_sign_text: true,
             show_sign_commands: true,
             show_entity_labels: true,
+            show_block_hud: true,
             show_chunk_borders: false,
             show_terrain_populated: false,
             show_ceiling: false,
@@ -311,7 +314,7 @@ impl AppConfig {
     }
 }
 
-fn default_show_barriers() -> bool {
+fn default_true() -> bool {
     true
 }
 

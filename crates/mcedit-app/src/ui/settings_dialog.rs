@@ -119,6 +119,15 @@ pub fn draw(ctx: &Context, editor: &mut EditorState, renderer: &mut WorldRendere
                 editor.config.save();
             }
             if ui
+                .checkbox(
+                    &mut editor.config.show_block_hud,
+                    "Show Looked-At Block HUD (WAILA)",
+                )
+                .changed()
+            {
+                editor.config.save();
+            }
+            if ui
                 .checkbox(&mut editor.config.vsync, "VSync")
                 .changed()
             {

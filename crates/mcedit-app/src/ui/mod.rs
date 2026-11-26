@@ -8,6 +8,7 @@ pub mod settings_dialog;
 pub mod status_bar;
 pub mod toolbar;
 pub mod top_bar;
+pub mod waila_hud;
 pub mod welcome;
 pub mod world_info;
 pub mod world_labels;

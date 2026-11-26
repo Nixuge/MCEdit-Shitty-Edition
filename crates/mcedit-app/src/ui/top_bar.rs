@@ -346,6 +346,15 @@ fn draw_in_window_menus(ui: &mut Ui, editor: &mut EditorState, renderer: &mut Wo
         {
             editor.config.save();
         }
+        if ui
+            .checkbox(
+                &mut editor.config.show_block_hud,
+                "Show Looked-At Block HUD (WAILA)",
+            )
+            .changed()
+        {
+            editor.config.save();
+        }
         ui.checkbox(&mut editor.config.show_chunk_borders, "Show Chunk Borders");
         if ui
             .checkbox(&mut editor.config.show_floor_grid, "Show World Chunk Grid")
@@ -411,7 +420,7 @@ mod tests {
                 Path::new("/Backups/survival_v2"),
                 Some(&nav),
             ),
-            "Backups [2/3] Survival World (survival_v2)"
+            "(2/3)  Backups/Survival World (survival_v2)"
         );
         assert_eq!(
             format_world_title_with_folder(
@@ -419,7 +428,7 @@ mod tests {
                 Path::new("/Backups/survival_v2"),
                 Some(&nav),
             ),
-            "Backups [2/3] survival_v2"
+            "(2/3)  Backups/survival_v2"
         );
         assert_eq!(nav.stepped_index(1), Some(2));
         assert_eq!(nav.stepped_index(-2), Some(2));
